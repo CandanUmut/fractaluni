@@ -20,6 +20,7 @@ import { Viewmodel } from '../render/viewmodel.ts';
 import { Spaceship } from '../render/spaceship.ts';
 import { Effects } from '../render/effects.ts';
 import { ShipTerminal } from '../ui/shipTerminal.ts';
+import { Reticle } from '../ui/reticle.ts';
 import { progression, energyMaxFor, cargoCapFor, scanRangeFor, gunDamageFor, drillTierFor, saveProgression } from '../sim/progression.ts';
 import { makeWeapons, type HeldItem, type WeaponCtx, type RayHit } from '../weapons/items.ts';
 import { audio } from '../audio/audio.ts';
@@ -79,6 +80,7 @@ export class SurfaceScene implements AppScene {
   // v3 Phase F: landed ship hub (trade + upgrade + recharge).
   private readonly ship = new Spaceship();
   private readonly terminal: ShipTerminal;
+  private readonly reticle: Reticle;
   private nearShip = false;
   private lastMsg = '';
   private pickupT = 0;
@@ -186,6 +188,7 @@ export class SurfaceScene implements AppScene {
     // Landed ship hub at the descent point (abs origin 0,0).
     this.scene.add(this.ship.group);
     this.terminal = new ShipTerminal(hudRoot);
+    this.reticle = new Reticle(hudRoot);
     this.terminal.onSell = () => this.sellCargo();
     this.terminal.onChange = () => this.applyProgression();
     this.energyMax = energyMaxFor();
@@ -251,6 +254,7 @@ export class SurfaceScene implements AppScene {
       this.guardians.damageNear(hit.point.x, hit.point.z, this.originCX, this.originCZ, 10, 38, this.effects);
     } else if (guardian) {
       this.guardians.damage(guardian, kind === 'gun' ? gunDamageFor() : 34 * dt, this.effects);
+      if (kind === 'gun') this.reticle.markHit();
       return;
     }
 
@@ -446,6 +450,11 @@ export class SurfaceScene implements AppScene {
     }
     if (this.terminal.visible) this.terminal.setSellValue(this.cargoValue());
 
+    // HUD reticle: damage vignette from recent hits + low energy; hide crosshair in menu.
+    const dmg = Math.max(this.hitFlash / 0.4, this.energy <= 1 ? 0.4 : 0);
+    this.reticle.update(dt, dmg);
+    this.reticle.setVisible(!this.terminal.visible);
+
     // Weapons (aim from the clean camera orientation before shake).
     this.current.update(sdt, this.buildCtx());
     this.effects.update(dt); // real dt so hit-stop can elapse
@@ -509,6 +518,7 @@ export class SurfaceScene implements AppScene {
     this.compass.dispose();
     this.ship.dispose();
     this.terminal.dispose();
+    this.reticle.dispose();
     this.controller.dispose();
     this.chunks.dispose();
     this.flora.dispose();

@@ -30,23 +30,22 @@ so single-precision floats never jitter far from the camera.
 - `p` toggles the derived-profile debug panel. Bottom-right button copies the
   shareable URL.
 
-### Living world (v2) — on a surface
+### Scavenger game (v3) — first-person, on a surface
 
-The planet you stand on is **writable** and runs a local ecosystem. Your changes
-persist (IndexedDB, keyed by universe + planet); the cosmos stays pure math, the
-sparse diff is the only stored state.
+A first-person scavenger loop: **scan → drill/bomb deposits → clear guardians →
+haul ore to your ship → sell → upgrade → reach richer, more dangerous worlds.**
+Resources are derived from each planet (harsh worlds carry rarer ore). Progression
+(currency, gear tiers) and per-planet depletion persist in IndexedDB.
 
-- **Sim/time:** `O` overlay · `I` cycle field (vegetation/moisture/temperature/
-  herbivore/predator) · `K` pause · `L` speed · `J` skip ahead.
-- **Transform:** `X` gather (seed/sample) · `F` plant · `C` clear · `V` dig water
-  · `H` introduce herbivores · `Y` introduce predators · `B` region-scale tools
-  (unlocks after a few edits).
-- **Survive:** `E` eat (forage/hunt). Energy/warmth/food/vitality bars; hazards
-  scale with the planet (molten/airless = lethal & time-limited). Death wakes you
-  at your landing site (no permadeath).
-
-Return to a planet you changed and the ecosystem **catches up** for the time you
-were away.
+- **Move:** `WASD` · mouse look · `Shift` sprint · `Space` jump / hold to jetpack.
+- **Tools (LMB):** `1` Pulse Rifle · `2` Frag Charge (arc + explosion) · `3`
+  Mining Drill (hold). Wheel cycles. `R` scan (compass shows nearby ore).
+- **Ship hub:** stand by your landed ship to recharge; `B` opens the trade &
+  upgrade terminal (sell cargo → currency → buy drill/scanner/energy/cargo/gun).
+- **Energy** is the only pressure — spent by sprint/jetpack/tools/hits, regenerates
+  (solar scales with the star). It never kills; at zero you're throttled.
+- `T` take off. Sounds are pluggable — drop files in `public/sounds/` (see its
+  README).
 
 ## Develop
 
