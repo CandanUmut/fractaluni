@@ -4,6 +4,7 @@ import type { BloomSettings } from '../render/composer.ts';
 import { deriveStarAt, derivePlanet } from '../universe/index.ts';
 import { biomePalette } from '../palette/index.ts';
 import { makeTerrain, ChunkManager, CHUNK_SIZE } from '../gen/terrain.ts';
+import { FloraManager } from '../gen/flora.ts';
 import { SkyDome } from '../render/sky.ts';
 import { Water } from '../render/water.ts';
 import { SurfaceController } from './controls/SurfaceController.ts';
@@ -26,6 +27,7 @@ export class SurfaceScene implements AppScene {
   private readonly star: StarProfile;
   private readonly planet: PlanetProfile;
   private readonly chunks: ChunkManager;
+  private readonly flora: FloraManager;
   private readonly sky: SkyDome;
   private readonly water: Water | null;
   private readonly controller: SurfaceController;
@@ -72,6 +74,10 @@ export class SurfaceScene implements AppScene {
     // Terrain.
     this.chunks = new ChunkManager(this.sampler);
     this.scene.add(this.chunks.group);
+
+    // Flora (streamed alongside terrain).
+    this.flora = new FloraManager(this.planet, this.planet.seed, pal, this.sampler);
+    this.scene.add(this.flora.group);
 
     // Water (omitted for near-dry worlds).
     if (this.sampler.hasWater) {
@@ -122,6 +128,7 @@ export class SurfaceScene implements AppScene {
     }
 
     this.chunks.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
+    this.flora.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
     this.sky.follow(this.camera.position);
     if (this.water) this.water.update(dt, this.camera.position, this.sampler.seaLevel);
   }
@@ -135,6 +142,7 @@ export class SurfaceScene implements AppScene {
     window.removeEventListener('keydown', this.onKeyDown);
     this.controller.dispose();
     this.chunks.dispose();
+    this.flora.dispose();
     this.sky.dispose();
     this.water?.dispose();
   }
