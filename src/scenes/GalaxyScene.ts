@@ -5,6 +5,7 @@ import { FloatingOrigin } from '../core/floatingOrigin.ts';
 import { Starfield, CELL_SIZE, type StarRecord } from '../gen/starfield.ts';
 import { FlyController } from './controls/FlyController.ts';
 import { Spaceship } from '../render/spaceship.ts';
+import { Missiles } from '../render/missiles.ts';
 import { WarpStreaks } from '../render/warp.ts';
 import { makeRNG } from '../core/rng.ts';
 import { deriveSeed } from '../core/hash.ts';
@@ -34,17 +35,22 @@ export class GalaxyScene implements AppScene {
   private readonly starfield: Starfield;
   private readonly controller: FlyController;
   private readonly ship = new Spaceship();
+  private readonly missiles = new Missiles(this.scene);
   private readonly warp = new WarpStreaks();
   private readonly highlight: THREE.Mesh;
   private readonly nebula: THREE.Mesh;
+  private readonly dom: HTMLElement;
   private candidate: StarRecord | null = null;
   private engineOn = false;
 
   // scratch
   private readonly camOffset = new THREE.Vector3();
   private readonly desiredCam = new THREE.Vector3();
+  private readonly muzzle = new THREE.Vector3();
+  private readonly fwd = new THREE.Vector3();
 
   constructor(universeSeed: number, dom: HTMLElement) {
+    this.dom = dom;
     this.scene.background = new THREE.Color(0x02030a);
 
     this.camera = new THREE.PerspectiveCamera(68, 1, 0.5, 16000);
@@ -83,11 +89,26 @@ export class GalaxyScene implements AppScene {
     this.scene.add(this.highlight);
 
     window.addEventListener('keydown', this.onKeyDown);
+    dom.addEventListener('pointerdown', this.onPointerDown);
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (e.key === 'Enter') this.enterCandidate();
   };
+
+  // Left mouse (once the pointer is captured) fires the ship's missiles.
+  private onPointerDown = (e: PointerEvent): void => {
+    if (e.button === 0 && document.pointerLockElement === this.dom) this.fireMissiles();
+  };
+
+  private fireMissiles(): void {
+    if (!this.missiles.ready) return;
+    this.ship.group.getWorldDirection(this.fwd); // ship forward (-Z)
+    for (const side of [-1, 1]) {
+      this.ship.muzzleWorld(side, this.muzzle);
+      this.missiles.fire(this.muzzle, this.fwd, 1100);
+    }
+  }
 
   private enterCandidate(): void {
     if (this.candidate && this.onSelectStar) {
@@ -102,6 +123,7 @@ export class GalaxyScene implements AppScene {
   /** Mobile console buttons for galaxy flight. */
   touchActions(): TouchAction[] {
     return [
+      { id: 'fire', label: 'FIRE', primary: true, color: 'rgba(230,90,90,0.5)', onDown: () => this.fireMissiles() },
       { id: 'enter', label: 'ENTER', primary: true, color: 'rgba(120,200,120,0.5)', onDown: () => this.enterCandidate() },
       { id: 'up', label: 'UP', onDown: () => (touch.jump = true), onUp: () => (touch.jump = false) },
       { id: 'down', label: 'DOWN', onDown: () => (touch.descend = true), onUp: () => (touch.descend = false) },
@@ -119,6 +141,7 @@ export class GalaxyScene implements AppScene {
       this.camera.position.sub(
         this.camOffset.set(shift.x * CELL_SIZE, shift.y * CELL_SIZE, shift.z * CELL_SIZE),
       );
+      this.missiles.shift(shift.x * CELL_SIZE, shift.y * CELL_SIZE, shift.z * CELL_SIZE);
     }
     this.starfield.update(this.origin);
     this.nebula.position.copy(ship.position);
@@ -143,6 +166,12 @@ export class GalaxyScene implements AppScene {
 
     this.warp.update(dt, this.controller.isWarping ? Math.max(speed, 0.6) : speed);
 
+    // Missiles streak forward and burst on (or near) any star they reach.
+    this.missiles.update(dt, (pos) => {
+      const s = this.starfield.nearestStar(pos.x, pos.y, pos.z, 90);
+      return s ? new THREE.Vector3(s.lx, s.ly, s.lz) : null;
+    });
+
     // Nearest-star selection (relative to the ship, the true player position).
     this.candidate = this.starfield.nearestStar(ship.position.x, ship.position.y, ship.position.z, SELECT_RADIUS);
     if (this.candidate) {
@@ -161,9 +190,11 @@ export class GalaxyScene implements AppScene {
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown);
+    this.dom.removeEventListener('pointerdown', this.onPointerDown);
     audio.stopEngine();
     this.controller.dispose();
     this.starfield.dispose();
+    this.missiles.dispose();
     this.ship.dispose();
     this.warp.dispose();
     this.nebula.geometry.dispose();
@@ -180,7 +211,7 @@ export class GalaxyScene implements AppScene {
       `cell [${c.x}, ${c.y}, ${c.z}]   local (${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)})`,
       `stars loaded: ${this.starfield.active.length}${this.controller.isWarping ? '   ⚡ WARP' : ''}`,
     ];
-    if (!this.controller.isLocked) lines.push('click to capture mouse · WASD+RF fly · Q/E roll · Shift warp');
+    if (!this.controller.isLocked) lines.push('click to capture mouse · WASD+RF fly · Q/E roll · Shift warp · LMB missiles');
     if (this.candidate) {
       const s = this.candidate.profile;
       lines.push(`▶ star ${s.spectralClass}  ${s.temperature.toFixed(0)}K  — press Enter to enter system`);

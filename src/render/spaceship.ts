@@ -50,6 +50,18 @@ export class Spaceship {
     dome.translate(0, 0.32, 0.1);
     this.add(dome, glass);
 
+    // Forward missile pods (one per side), so the ship reads as armed.
+    for (const sx of [-1, 1]) {
+      const pod = new THREE.CylinderGeometry(0.16, 0.2, 0.7, 8);
+      pod.rotateX(Math.PI / 2);
+      pod.translate(sx * 1.15, -0.12, -0.95);
+      this.add(pod, dark);
+      const tip = new THREE.ConeGeometry(0.1, 0.26, 8);
+      tip.rotateX(-Math.PI / 2);
+      tip.translate(sx * 1.15, -0.12, -1.4);
+      this.add(tip, body);
+    }
+
     // Engine pod + glow at the back (+Z).
     const pod = new THREE.CylinderGeometry(0.45, 0.55, 0.5, 12);
     pod.rotateX(Math.PI / 2);
@@ -67,6 +79,12 @@ export class Spaceship {
   private add(geo: THREE.BufferGeometry, mat: THREE.Material): void {
     this.hull.add(new THREE.Mesh(geo, mat));
     this.disposables.push(geo);
+  }
+
+  /** World-space position of a forward missile pod muzzle (side = -1 | +1). */
+  muzzleWorld(side: number, out: THREE.Vector3): THREE.Vector3 {
+    this.group.updateMatrixWorld();
+    return out.set(side * 1.15, -0.12, -1.6).applyMatrix4(this.group.matrixWorld);
   }
 
   /** targetBank in radians (e.g. from turn rate); thrust in [0,1]. */

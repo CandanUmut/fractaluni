@@ -3,6 +3,7 @@ import type { AppScene } from './AppScene.ts';
 import type { BloomSettings } from '../render/composer.ts';
 import { FlyController } from './controls/FlyController.ts';
 import { Spaceship } from '../render/spaceship.ts';
+import { Missiles } from '../render/missiles.ts';
 import { deriveStarAt, deriveSystem } from '../universe/index.ts';
 import { planetResources, planetDanger } from '../universe/resources.ts';
 import { audio } from '../audio/audio.ts';
@@ -42,7 +43,13 @@ export class SystemScene implements AppScene {
   private readonly controller: FlyController;
   private readonly highlight: THREE.Mesh;
   private readonly ship = new Spaceship();
+  private readonly missiles = new Missiles(this.scene);
   private readonly camOffset = new THREE.Vector3();
+  private readonly muzzle = new THREE.Vector3();
+  private readonly fwd = new THREE.Vector3();
+  private readonly dom: HTMLElement;
+  private missileSpeed = 360;
+  private starWorldR = 5;
   private engineOn = false;
   private time = 0;
   private candidate: PlanetBody | null = null;
@@ -54,6 +61,7 @@ export class SystemScene implements AppScene {
     starIndex: number,
     dom: HTMLElement,
   ) {
+    this.dom = dom;
     this.star = deriveStarAt(universeSeed, cell, starIndex);
     const planets = deriveSystem(this.star);
 
@@ -64,6 +72,7 @@ export class SystemScene implements AppScene {
 
     // Central star.
     const starWorldR = clamp(2.5 + this.star.radius * 0.6, 2.5, 10);
+    this.starWorldR = starWorldR;
     const starColor = rgbToHex(scaleRGB(this.star.color, 1.7));
     const starMat = new THREE.MeshBasicMaterial({ color: starColor });
     const starGeo = new THREE.IcosahedronGeometry(starWorldR, 3);
@@ -110,8 +119,24 @@ export class SystemScene implements AppScene {
 
     this.controller = new FlyController(this.ship.group, dom);
     this.controller.baseSpeed = clamp(outer * 0.25, 30, 400);
+    this.missileSpeed = this.controller.baseSpeed * 1.8 + 120;
 
     window.addEventListener('keydown', this.onKeyDown);
+    dom.addEventListener('pointerdown', this.onPointerDown);
+  }
+
+  // Left mouse (once the pointer is captured) fires the ship's missiles.
+  private onPointerDown = (e: PointerEvent): void => {
+    if (e.button === 0 && document.pointerLockElement === this.dom) this.fireMissiles();
+  };
+
+  private fireMissiles(): void {
+    if (!this.missiles.ready) return;
+    this.ship.group.getWorldDirection(this.fwd);
+    for (const side of [-1, 1]) {
+      this.ship.muzzleWorld(side, this.muzzle);
+      this.missiles.fire(this.muzzle, this.fwd, this.missileSpeed);
+    }
   }
 
   private addPlanet(p: PlanetProfile): void {
@@ -212,6 +237,7 @@ export class SystemScene implements AppScene {
   /** Mobile console buttons for system flight. */
   touchActions(): TouchAction[] {
     return [
+      { id: 'fire', label: 'FIRE', primary: true, color: 'rgba(230,90,90,0.5)', onDown: () => this.fireMissiles() },
       { id: 'land', label: 'LAND', primary: true, color: 'rgba(120,200,120,0.5)', onDown: () => this.descendCandidate() },
       { id: 'back', label: 'BACK', color: 'rgba(200,120,120,0.5)', onDown: () => this.onBack?.() },
       { id: 'chart', label: 'CHART', onDown: () => this.toggleChart() },
@@ -274,6 +300,17 @@ export class SystemScene implements AppScene {
       b.mesh.rotation.y += dt * 0.2;
     }
 
+    // Missiles burst on contact with a planet (or the central star).
+    this.missiles.update(dt, (pos) => {
+      if (pos.length() < this.starWorldR + 2) return new THREE.Vector3(0, 0, 0);
+      for (const b of this.bodies) {
+        if (pos.distanceToSquared(b.mesh.position) < (b.worldRadius + 1.5) * (b.worldRadius + 1.5)) {
+          return b.mesh.position.clone();
+        }
+      }
+      return null;
+    });
+
     // Nearest planet to the ship within its selection distance.
     this.candidate = null;
     let bestD2 = Infinity;
@@ -302,8 +339,10 @@ export class SystemScene implements AppScene {
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown);
+    this.dom.removeEventListener('pointerdown', this.onPointerDown);
     audio.stopEngine();
     this.controller.dispose();
+    this.missiles.dispose();
     this.ship.dispose();
     this.chartEl?.remove();
     for (const d of this.disposables) d.dispose();

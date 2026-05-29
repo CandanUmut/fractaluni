@@ -83,6 +83,8 @@ export class SurfaceScene implements AppScene {
   private drillTier = drillTierFor();
   private scanRange = scanRangeFor();
   private readonly drillReach = 9;
+  private readonly groundColor: THREE.Color;
+  private digMsgT = 0;
 
   // v3 Phase F: landed ship hub (trade + upgrade + recharge).
   private readonly ship = new Spaceship();
@@ -147,6 +149,7 @@ export class SurfaceScene implements AppScene {
     this.solarRegen = clamp(2 + Math.pow(this.star.luminosity, 0.25) * 4, 2, 13);
     const pal = biomePalette(this.planet, this.star);
     this.sampler = makeTerrain(this.planet, this.planet.seed, pal);
+    this.groundColor = new THREE.Color(rgbToHex(pal.terrainLow));
 
     this.colorGrade = {
       tint: { r: lerp(1, pal.sun.r, 0.2), g: lerp(1, pal.sun.g, 0.2), b: lerp(1, pal.sun.b, 0.2) },
@@ -417,19 +420,43 @@ export class SurfaceScene implements AppScene {
     }
 
     const node = NodeManager.nodeOf(hit.object);
-    if (!node) return;
-    if (kind === 'drill') {
-      if (this.drillTier >= node.type.hardness) {
-        const r = this.nodes.extract(node, 26 * dt);
+    if (node) {
+      if (kind === 'drill') {
+        if (this.drillTier >= node.type.hardness) {
+          const r = this.nodes.extract(node, 26 * dt);
+          this.collect(node.type, r.gained, r.depleted);
+        } else {
+          this.lastMsg = `${node.type.name}: too hard — needs drill tier ${node.type.hardness} (or crack it with a bomb)`;
+        }
+      } else if (kind === 'bomb') {
+        const r = this.nodes.extract(node, node.maxRichness * 0.4); // explosive cracking
         this.collect(node.type, r.gained, r.depleted);
-      } else {
-        this.lastMsg = `${node.type.name}: too hard — needs drill tier ${node.type.hardness} (or crack it with a bomb)`;
       }
-    } else if (kind === 'bomb') {
-      const r = this.nodes.extract(node, node.maxRichness * 0.4); // explosive cracking
-      this.collect(node.type, r.gained, r.depleted);
+      return;
     }
+
+    // No ore node here — let the drill bite into the planet's crust itself.
+    if (kind === 'drill' && this.isTerrain(hit.object)) this.drillGround(hit, dt);
   };
+
+  private isTerrain(object: THREE.Object3D | null): boolean {
+    return object !== null && this.chunks.group.children.includes(object);
+  }
+
+  /** Drill bare ground: kick up dirt, carve the surface, and collect regolith. */
+  private drillGround(hit: RayHit, dt: number): void {
+    this.effects.burst(hit.point, this.groundColor, 6, 5, 0.5, -12, 5);
+    const r = RESOURCES.regolith!;
+    const room = this.cargoCap - this.cargoUsed;
+    if (room <= 0) {
+      if (this.digMsgT <= 0) {
+        this.digMsgT = 0.4;
+        this.lastMsg = 'cargo full — return to ship to sell';
+      }
+      return;
+    }
+    this.collect(r, 7 * dt, false);
+  }
 
   private collect(type: ResourceType, amount: number, depleted: boolean): void {
     if (amount <= 0) return;
@@ -823,6 +850,7 @@ export class SurfaceScene implements AppScene {
     this.current.update(sdt, this.buildCtx());
     this.effects.update(dt); // real dt so hit-stop can elapse
     if (this.pickupT > 0) this.pickupT -= dt;
+    if (this.digMsgT > 0) this.digMsgT -= dt;
 
     // Compass: nearby deposits by relative bearing.
     const fx = this.aimDir.x;
