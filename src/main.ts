@@ -1,5 +1,6 @@
 import { SceneManager } from './scenes/SceneManager.ts';
 import { PlaceholderScene } from './scenes/PlaceholderScene.ts';
+import { GalaxyScene } from './scenes/GalaxyScene.ts';
 import type { AppScene } from './scenes/AppScene.ts';
 import { Hud } from './ui/hud.ts';
 import { readState, writeState, type Location, type UniverseState } from './ui/urlState.ts';
@@ -17,8 +18,10 @@ let state: UniverseState = readState();
 // Ensure the seed is always present in the address bar (Phase-0 done criterion).
 writeState(state);
 
-// Phase 0: map each location kind to a labelled placeholder scene. Real scenes
-// replace these in Phases 2–4.
+// Map each location kind to its scene. Galaxy is real (Phase 2); system/surface
+// are still placeholders until Phases 3–4.
+const universeSeed = hashString(state.seed);
+
 function sceneForLocation(loc: Location): AppScene {
   switch (loc.kind) {
     case 'system':
@@ -26,8 +29,11 @@ function sceneForLocation(loc: Location): AppScene {
     case 'surface':
       return new PlaceholderScene('surface', 0x7fd08a, 0x0a1410);
     case 'galaxy':
-    default:
-      return new PlaceholderScene('galaxy', 0x8fbaff, 0x05060a);
+    default: {
+      const galaxy = new GalaxyScene(universeSeed, manager.domElement);
+      galaxy.onSelectStar = (sel) => goTo({ kind: 'system', cell: sel.cell, star: sel.index });
+      return galaxy;
+    }
   }
 }
 
