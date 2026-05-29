@@ -10,6 +10,7 @@ import { makeRNG } from '../core/rng.ts';
 import { deriveSeed } from '../core/hash.ts';
 import { clamp } from '../core/math.ts';
 import { audio } from '../audio/audio.ts';
+import { touch, type TouchAction } from '../ui/touchControls.ts';
 
 export interface StarSelection {
   cell: [number, number, number];
@@ -85,14 +86,28 @@ export class GalaxyScene implements AppScene {
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === 'Enter' && this.candidate && this.onSelectStar) {
+    if (e.key === 'Enter') this.enterCandidate();
+  };
+
+  private enterCandidate(): void {
+    if (this.candidate && this.onSelectStar) {
       this.onSelectStar({
         cell: [...this.candidate.cell],
         index: this.candidate.index,
         record: this.candidate,
       });
     }
-  };
+  }
+
+  /** Mobile console buttons for galaxy flight. */
+  touchActions(): TouchAction[] {
+    return [
+      { id: 'enter', label: 'ENTER', primary: true, color: 'rgba(120,200,120,0.5)', onDown: () => this.enterCandidate() },
+      { id: 'up', label: 'UP', onDown: () => (touch.jump = true), onUp: () => (touch.jump = false) },
+      { id: 'down', label: 'DOWN', onDown: () => (touch.descend = true), onUp: () => (touch.descend = false) },
+      { id: 'warp', label: 'WARP', color: 'rgba(200,160,90,0.5)', onDown: () => (touch.warp = true), onUp: () => (touch.warp = false) },
+    ];
+  }
 
   update(dt: number): void {
     this.controller.update(dt);

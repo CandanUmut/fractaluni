@@ -30,6 +30,7 @@ import { settings } from '../ui/settings.ts';
 import { makeWeapons, type HeldItem, type WeaponCtx, type RayHit } from '../weapons/items.ts';
 import { audio } from '../audio/audio.ts';
 import { SurfaceController } from './controls/SurfaceController.ts';
+import { touch, touchUI, type TouchAction } from '../ui/touchControls.ts';
 import { rgbToHex } from '../core/color.ts';
 import { clamp, lerp, DEG2RAD, TAU } from '../core/math.ts';
 import { makeRNG } from '../core/rng.ts';
@@ -333,19 +334,73 @@ export class SurfaceScene implements AppScene {
     this.raycaster.set(origin, dir);
     this.raycaster.far = far;
     this.raycaster.near = 0;
-    // Nodes + guardians first (few), then terrain behind them.
+    // Nodes + guardians first (few), then living things, then terrain behind them.
     const targets = this.nodes.meshes();
     for (const g of this.guardians.meshes()) targets.push(g);
+    for (const m of this.herds.meshList()) targets.push(m);
+    if (this.birds) targets.push(this.birds.mesh);
+    if (this.fish) targets.push(this.fish.mesh);
+    for (const m of this.flora.meshList()) targets.push(m);
     for (const c of this.chunks.group.children) targets.push(c);
     const hits = this.raycaster.intersectObjects(targets, false);
     if (hits.length === 0) return null;
     const h = hits[0]!;
     const normal = new THREE.Vector3(0, 1, 0);
     if (h.face) normal.copy(h.face.normal).transformDirection(h.object.matrixWorld);
-    return { point: h.point.clone(), normal, distance: h.distance, object: h.object };
+    return { point: h.point.clone(), normal, distance: h.distance, object: h.object, instanceId: h.instanceId };
   };
 
+  /** React to shooting the living/scenery world (birds, fish, herds, trees).
+   *  Returns true if the hit object was one of these (so the caller stops). */
+  private hitWildlife(hit: RayHit, kind: 'gun' | 'bomb' | 'drill'): boolean {
+    if (!hit.object || hit.instanceId === undefined) return false;
+    const power = kind === 'gun' ? gunDamageFor() : kind === 'bomb' ? 60 : 18;
+
+    // Birds — knock the struck one out of the sky; flock scatters.
+    if (this.birds && hit.object === this.birds.mesh) {
+      const at = this.birds.hit(hit.instanceId);
+      if (at) {
+        this.effects.burst(at, new THREE.Color(0xffe0a0), 14, 6, 0.5, -10, 6);
+        audio.play('impact', 0.7, this.panFor(at));
+      }
+      return true;
+    }
+    // Fish — float it belly-up to the surface.
+    if (this.fish && hit.object === this.fish.mesh) {
+      const at = this.fish.hit(hit.instanceId);
+      if (at) {
+        this.effects.burst(at, new THREE.Color(0xbfe6ff), 12, 5, 0.4, -2, 5);
+        audio.play('impact', 0.6, this.panFor(at));
+      }
+      return true;
+    }
+    // Roaming creatures — wound or fell them.
+    const creature = this.herds.hit(hit.object, hit.instanceId, power);
+    if (creature) {
+      this.effects.burst(creature.pos, new THREE.Color(0xff7a5a), creature.killed ? 22 : 10, 7, 0.6, -8, 7);
+      audio.play(creature.killed ? 'death' : 'hurt', 0.7, this.panFor(creature.pos));
+      const p = this.worldToScreen(creature.pos.clone().setY(creature.pos.y + 1.5));
+      if (p.visible) this.markers.damageNumber(p.sx, p.sy, creature.killed ? '✕' : `${Math.round(power)}`, '#ff9a6a');
+      return true;
+    }
+    // Trees / flora — fell them in a topple of leaves.
+    const felled = this.flora.hit(hit.object, hit.instanceId);
+    if (felled) {
+      this.effects.burst(felled, new THREE.Color(0x9bd17a), 18, 6, 0.7, -5, 6);
+      audio.play('impact', 0.5, this.panFor(felled));
+      return true;
+    }
+    return false;
+  }
+
   private readonly onHit = (hit: RayHit, kind: 'gun' | 'bomb' | 'drill', dt: number): void => {
+    // Living world & scenery react to weapons fire. A direct gun hit on
+    // wildlife is fully resolved here; a bomb still detonates (splash below).
+    if (kind !== 'drill') {
+      const wild = this.hitWildlife(hit, kind);
+      if (wild && kind === 'gun') return;
+    }
+
     // Guardians take damage from any tool; bombs also splash nearby ones.
     const guardian = GuardianManager.guardianOf(hit.object);
     if (kind === 'bomb') {
@@ -465,19 +520,51 @@ export class SurfaceScene implements AppScene {
       this.flashlight.visible = this.flashOn;
       this.lastMsg = `flashlight ${this.flashOn ? 'on' : 'off'}`;
     } else if (e.key === 'r' || e.key === 'R') {
-      const n = this.nodes.nearby(this.originCX, this.originCZ, this.camera.position.x, this.camera.position.z, this.scanRange).length;
-      this.lastMsg = `scan: ${n} deposit${n === 1 ? '' : 's'} within scanner range`;
-      audio.play('pickup', 0.5);
-      this.objectives.complete('scan');
+      this.doScan();
     } else if (e.key === 'b' || e.key === 'B') {
-      if (this.terminal.visible || this.nearShip) {
-        this.terminal.toggle();
-        this.controller.enabled = !this.terminal.visible; // freeze movement in the menu
-      } else {
-        this.lastMsg = 'return to your ship to trade & upgrade';
-      }
+      this.toggleShipTerminal();
     }
   };
+
+  private doScan(): void {
+    const n = this.nodes.nearby(this.originCX, this.originCZ, this.camera.position.x, this.camera.position.z, this.scanRange).length;
+    this.lastMsg = `scan: ${n} deposit${n === 1 ? '' : 's'} within scanner range`;
+    audio.play('pickup', 0.5);
+    this.objectives.complete('scan');
+  }
+
+  private toggleShipTerminal(): void {
+    if (this.terminal.visible || this.nearShip) {
+      this.terminal.toggle();
+      this.controller.enabled = !this.terminal.visible; // freeze movement in the menu
+    } else {
+      this.lastMsg = 'return to your ship to trade & upgrade';
+    }
+  }
+
+  /** Mobile console buttons for the surface. */
+  touchActions(): TouchAction[] {
+    return [
+      {
+        id: 'fire', label: 'FIRE', primary: true, color: 'rgba(230,90,90,0.5)',
+        onDown: () => {
+          audio.init();
+          this.current.primaryDown(this.buildCtx());
+        },
+        onUp: () => this.current.primaryUp(this.buildCtx()),
+      },
+      {
+        id: 'jump', label: 'JUMP', primary: true, color: 'rgba(90,150,230,0.5)',
+        onDown: () => (touch.jump = true),
+        onUp: () => (touch.jump = false),
+      },
+      { id: 'wpn', label: 'WPN', onDown: () => this.switchWeapon((this.weaponIndex + 1) % this.weapons.length) },
+      { id: 'scan', label: 'SCAN', onDown: () => this.doScan() },
+      { id: 'fly', label: 'FLY', onDown: () => this.controller.toggleMode() },
+      { id: 'ship', label: 'SHIP', onDown: () => this.toggleShipTerminal() },
+      { id: 'lift', label: 'LIFT', onDown: () => this.onTakeOff?.() },
+    ];
+  }
 
   private readonly onPageHide = (): void => {
     saveDiff(this.diffKey, this.diff);
@@ -597,6 +684,7 @@ export class SurfaceScene implements AppScene {
 
     this.chunks.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
     this.flora.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
+    this.flora.tick(sdt); // advance any felled-tree topples
     this.birds?.update(sdt, this.camera.position);
     this.fish?.update(sdt, this.camera.position);
     this.herds.update(sdt, this.camera.position);
@@ -705,7 +793,7 @@ export class SurfaceScene implements AppScene {
     this.objectives.update(dt);
 
     // Styled HUD.
-    const hint = !this.controller.isLocked
+    const hint = !this.controller.isLocked && !touch.enabled
       ? 'click to capture mouse'
       : this.nearShip
         ? '◈ at ship — recharging · press B to trade & upgrade'
@@ -724,6 +812,7 @@ export class SurfaceScene implements AppScene {
       contract: this.contractText(),
     });
     this.shud.setVisible(!this.terminal.visible);
+    touchUI.current?.block('terminal', this.terminal.visible);
 
     // HUD reticle: damage vignette from recent hits + low energy; hide crosshair in menu.
     const dmg = Math.max(this.hitFlash / 0.4, this.energy <= 1 ? 0.4 : 0);

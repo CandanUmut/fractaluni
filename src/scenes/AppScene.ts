@@ -1,6 +1,7 @@
 import type * as THREE from 'three';
 import type { BloomSettings } from '../render/composer.ts';
 import type { ColorGradeSettings } from '../render/colorGrade.ts';
+import type { TouchAction } from '../ui/touchControls.ts';
 
 /** A swappable scene owned by the SceneManager. Each scene provides its own
  *  Three.js scene graph + camera, and manages its own lifecycle. The renderer
@@ -30,4 +31,7 @@ export interface AppScene {
   /** Optional pass rendered AFTER post-processing — e.g. a first-person
    *  viewmodel that must never be clipped by world geometry. */
   renderOverlay?(renderer: THREE.WebGLRenderer): void;
+
+  /** Optional on-screen action buttons for the mobile touch console. */
+  touchActions?(): TouchAction[];
 }

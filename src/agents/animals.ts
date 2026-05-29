@@ -232,6 +232,10 @@ interface Critter {
   turn: number;
   speed: number;
   phase: number;
+  hp: number;
+  dying: number; // >0 while collapsing after the killing blow
+  dead: boolean;
+  flee: number; // >0 while bolting away from a recent shot
 }
 
 // Ambient creature counts per species, by biome. Some of these become hostile
@@ -308,10 +312,37 @@ export class AnimalHerds {
           turn: 0,
           speed: rangeFloat(rng, 2.5, 6),
           phase: rng() * TAU,
+          hp: 24,
+          dying: 0,
+          dead: false,
+          flee: 0,
         });
       }
       this.critters.push(list);
     }
+  }
+
+  /** The per-species instanced meshes (raycast targets for shooting). */
+  meshList(): THREE.InstancedMesh[] {
+    return this.meshes;
+  }
+
+  /** Damage the creature at (mesh, instanceId). Returns its local position for
+   *  impact FX plus whether the blow was lethal, or null if it wasn't ours. */
+  hit(object: THREE.Object3D, instanceId: number, damage: number): { pos: THREE.Vector3; killed: boolean } | null {
+    const s = this.meshes.indexOf(object as THREE.InstancedMesh);
+    if (s < 0) return null;
+    const c = this.critters[s]?.[instanceId];
+    if (!c || c.dead || c.dying > 0) return null;
+    const gy = this.heightAt(c.x, c.z);
+    c.hp -= damage;
+    c.flee = 5; // bolt away whether it lived or died
+    if (c.hp <= 0) {
+      c.dying = 1.2;
+      return { pos: new THREE.Vector3(c.x, gy + 0.6, c.z), killed: true };
+    }
+    // Wounded: turn to run directly away from the player's recent line of fire.
+    return { pos: new THREE.Vector3(c.x, gy + 0.6, c.z), killed: false };
   }
 
   /** Keep herds in place when the floating origin recenters. */
@@ -334,19 +365,43 @@ export class AnimalHerds {
       const mesh = this.meshes[s]!;
       for (let i = 0; i < list.length; i++) {
         const c = list[i]!;
+
+        // Slain creatures: collapse onto their side, then disappear.
+        if (c.dead) {
+          this.dummy.position.set(0, -1e4, 0);
+          this.dummy.scale.setScalar(0);
+          this.dummy.updateMatrix();
+          mesh.setMatrixAt(i, this.dummy.matrix);
+          continue;
+        }
+        if (c.dying > 0) {
+          c.dying -= dt;
+          if (c.dying <= 0) c.dead = true;
+          const gy = this.heightAt(c.x, c.z);
+          const tip = Math.min(Math.PI / 2, (1 - c.dying / 1.2) * (Math.PI / 2));
+          this.dummy.position.set(c.x, gy, c.z);
+          this.dummy.rotation.set(0, c.heading, tip);
+          this.dummy.scale.setScalar(1);
+          this.dummy.updateMatrix();
+          mesh.setMatrixAt(i, this.dummy.matrix);
+          continue;
+        }
+
         c.turn += (Math.random() - 0.5) * dt * 2.5; // visual jitter only
         c.turn *= 0.9;
         c.heading += c.turn * dt;
+        if (c.flee > 0) c.flee -= dt;
 
         // Steer back toward the player if it wandered too far.
         const dxp = playerLocal.x - c.x;
         const dzp = playerLocal.z - c.z;
-        if (Math.hypot(dxp, dzp) > this.range) {
+        if (c.flee <= 0 && Math.hypot(dxp, dzp) > this.range) {
           c.heading = lerp(c.heading, Math.atan2(dxp, dzp), 0.04);
         }
 
-        const nx = c.x + Math.sin(c.heading) * c.speed * dt;
-        const nz = c.z + Math.cos(c.heading) * c.speed * dt;
+        const speed = c.flee > 0 ? c.speed * 3.2 : c.speed;
+        const nx = c.x + Math.sin(c.heading) * speed * dt;
+        const nz = c.z + Math.cos(c.heading) * speed * dt;
         if (this.heightAt(nx, nz) < seaGuard) {
           c.heading += 2.2 * dt + 0.4; // veer off water
         } else {
@@ -355,7 +410,7 @@ export class AnimalHerds {
         }
 
         const gy = this.heightAt(c.x, c.z);
-        const bob = Math.sin(this.time * (3 + c.speed) + c.phase) * 0.06;
+        const bob = Math.sin(this.time * (3 + speed) + c.phase) * 0.06;
         this.dummy.position.set(c.x, gy + bob, c.z);
         this.dummy.rotation.set(0, c.heading, 0);
         this.dummy.scale.setScalar(1);

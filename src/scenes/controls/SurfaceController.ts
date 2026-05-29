@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { clamp } from '../../core/math.ts';
 import { settings } from '../../ui/settings.ts';
+import { touch } from '../../ui/touchControls.ts';
 
 // Walk + fly character controller for the surface. Euler yaw/pitch mouse look
 // (pitch clamped, no roll). Walk mode applies gravity and follows the terrain
@@ -77,8 +78,21 @@ export class SurfaceController {
   }
 
   private onClick = (): void => {
+    if (touch.enabled) return; // mobile uses on-screen look, not pointer lock
     if (this.enabled && !this.locked) this.dom.requestPointerLock();
   };
+
+  /** True while the jump/jetpack input is held (Space or the touch JUMP button). */
+  private jumpHeld(): boolean {
+    return this.k(' ') || (touch.enabled && touch.jump);
+  }
+
+  /** Fold the touch joystick into a move basis (forward `fwd`, strafe `right`). */
+  private addTouchMove(): void {
+    if (!touch.enabled) return;
+    if (Math.abs(touch.move.y) > 0.04) this.move.addScaledVector(this.fwd, touch.move.y);
+    if (Math.abs(touch.move.x) > 0.04) this.move.addScaledVector(this.right, touch.move.x);
+  }
 
   private onLockChange = (): void => {
     this.locked = document.pointerLockElement === this.dom;
@@ -116,11 +130,14 @@ export class SurfaceController {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     this.pressed.add(e.key.toLowerCase());
-    if (e.key === 'g' || e.key === 'G') {
-      this.mode = this.mode === 'walk' ? 'fly' : 'walk';
-      this.vy = 0;
-    }
+    if (e.key === 'g' || e.key === 'G') this.toggleMode();
   };
+
+  /** Switch between walk and fly (G key / mobile FLY button). */
+  toggleMode(): void {
+    this.mode = this.mode === 'walk' ? 'fly' : 'walk';
+    this.vy = 0;
+  }
 
   private onKeyUp = (e: KeyboardEvent): void => {
     this.pressed.delete(e.key.toLowerCase());
@@ -137,11 +154,22 @@ export class SurfaceController {
   update(dt: number): void {
     if (!this.enabled) return;
 
+    // Touch look: drag deltas accumulated by the on-screen console.
+    if (touch.enabled && (touch.lookDX !== 0 || touch.lookDY !== 0)) {
+      const sens = this.lookSensitivity * settings.sensitivity * 2.4;
+      this.yaw -= touch.lookDX * sens;
+      this.pitch = clamp(this.pitch - touch.lookDY * sens, -1.5, 1.5);
+      this.swayX += touch.lookDX;
+      this.swayY += touch.lookDY;
+      touch.lookDX = 0;
+      touch.lookDY = 0;
+    }
+
     // Orientation.
     this.euler.set(this.pitch, this.yaw, 0, 'YXZ');
     this.camera.quaternion.setFromEuler(this.euler);
 
-    const sprint = this.k('shift') && this.energyOK;
+    const sprint = (this.k('shift') || (touch.enabled && touch.warp)) && this.energyOK;
     this.sprinting = sprint && this.moving;
     if (this.mode === 'fly') {
       this.updateFly(dt, sprint);
@@ -162,8 +190,9 @@ export class SurfaceController {
     if (this.k('s')) this.move.addScaledVector(this.fwd, -1);
     if (this.k('d')) this.move.add(this.right);
     if (this.k('a')) this.move.addScaledVector(this.right, -1);
-    if (this.k(' ')) this.move.y += 1;
-    if (this.k('control')) this.move.y -= 1;
+    this.addTouchMove();
+    if (this.jumpHeld()) this.move.y += 1;
+    if (this.k('control') || (touch.enabled && touch.descend)) this.move.y -= 1;
     this.moving = this.move.lengthSq() > 0;
     const speed = this.flySpeed * (boost ? 4 : 1);
     if (this.moving) this.move.normalize().multiplyScalar(speed * dt);
@@ -179,6 +208,7 @@ export class SurfaceController {
     if (this.k('s')) this.move.addScaledVector(this.fwd, -1);
     if (this.k('d')) this.move.add(this.right);
     if (this.k('a')) this.move.addScaledVector(this.right, -1);
+    this.addTouchMove();
     this.moving = this.move.lengthSq() > 0;
     const speed = this.walkSpeed * (sprint ? 2 : 1) * (this.energyOK ? 1 : 0.5);
     if (this.moving) this.move.normalize().multiplyScalar(speed * dt);
@@ -195,11 +225,11 @@ export class SurfaceController {
       this.camera.position.y = groundY;
       this.vy = 0;
       this.onGround = true;
-      if (this.k(' ')) this.vy = this.jumpSpeed; // jump off the ground
+      if (this.jumpHeld()) this.vy = this.jumpSpeed; // jump off the ground
     } else {
       this.onGround = false;
       // Jetpack: hold jump in the air for upward thrust (disabled when empty).
-      if (this.k(' ') && this.vy < this.jetpackMaxRise && this.energyOK) {
+      if (this.jumpHeld() && this.vy < this.jetpackMaxRise && this.energyOK) {
         this.vy += this.jetpackAccel * dt;
         this.jetpacking = true;
       }

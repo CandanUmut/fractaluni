@@ -12,6 +12,7 @@ import { clamp, TAU } from '../core/math.ts';
 import { makeRNG } from '../core/rng.ts';
 import { deriveSeed } from '../core/hash.ts';
 import type { PlanetProfile, StarProfile } from '../universe/types.ts';
+import { touch, type TouchAction } from '../ui/touchControls.ts';
 
 const ORBIT_SCALE = 16; // world units per AU
 const ORBIT_BASE = 14;
@@ -197,12 +198,28 @@ export class SystemScene implements AppScene {
     if ((e.key === 'Backspace' || e.key === 'b' || e.key === 'B') && this.onBack) {
       e.preventDefault();
       this.onBack();
-    } else if (e.key === 'Enter' && this.candidate && this.onSelectPlanet) {
-      this.onSelectPlanet(this.candidate.profile.index);
+    } else if (e.key === 'Enter') {
+      this.descendCandidate();
     } else if (e.key === 'm' || e.key === 'M') {
       this.toggleChart();
     }
   };
+
+  private descendCandidate(): void {
+    if (this.candidate && this.onSelectPlanet) this.onSelectPlanet(this.candidate.profile.index);
+  }
+
+  /** Mobile console buttons for system flight. */
+  touchActions(): TouchAction[] {
+    return [
+      { id: 'land', label: 'LAND', primary: true, color: 'rgba(120,200,120,0.5)', onDown: () => this.descendCandidate() },
+      { id: 'back', label: 'BACK', color: 'rgba(200,120,120,0.5)', onDown: () => this.onBack?.() },
+      { id: 'chart', label: 'CHART', onDown: () => this.toggleChart() },
+      { id: 'up', label: 'UP', onDown: () => (touch.jump = true), onUp: () => (touch.jump = false) },
+      { id: 'down', label: 'DOWN', onDown: () => (touch.descend = true), onUp: () => (touch.descend = false) },
+      { id: 'warp', label: 'WARP', color: 'rgba(200,160,90,0.5)', onDown: () => (touch.warp = true), onUp: () => (touch.warp = false) },
+    ];
+  }
 
   /** System chart: an orbital survey of every planet (resources + danger). */
   private toggleChart(): void {

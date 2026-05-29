@@ -12,6 +12,9 @@ import { loadProgression } from './sim/progression.ts';
 import { PauseMenu } from './ui/pauseMenu.ts';
 import { settings } from './ui/settings.ts';
 import { audio } from './audio/audio.ts';
+import { StartScreen } from './ui/startScreen.ts';
+import { isMobile } from './ui/platform.ts';
+import { TouchControls, touch, touchUI } from './ui/touchControls.ts';
 
 // Load global player progression (currency, equipment tiers) up front.
 void loadProgression();
@@ -35,6 +38,8 @@ function applyFov(v: number): void {
   }
 }
 pause.onFov = applyFov;
+// Reveal the mobile console again whenever the pause menu closes (incl. Resume).
+pause.onResume = () => touchUI.current?.block('menu', false);
 
 // Start looping background music on the first user gesture (browsers require one).
 let audioStarted = false;
@@ -96,6 +101,7 @@ async function goTo(loc: Location): Promise<void> {
   writeState(state);
   hud.setShareUrl(window.location.href);
   manager.setScene(sceneForLocation(loc));
+  applySceneTouch();
   applyFov(settings.fov);
   if (profileVisible) hud.setProfile(currentProfileLines());
   // Let a couple of frames render the new scene before revealing.
@@ -103,6 +109,12 @@ async function goTo(loc: Location): Promise<void> {
   await nextFrame();
   await transition.reveal();
   navigating = false;
+}
+
+/** Refresh the mobile console's action buttons for the active scene. */
+function applySceneTouch(): void {
+  if (!touch.enabled) return;
+  touchUI.current?.setActions(manager.activeScene?.touchActions?.() ?? []);
 }
 
 manager.setScene(sceneForLocation(state.location));
@@ -122,9 +134,14 @@ function currentProfileLines(): string[] {
 
 // Debug: toggle the derived-profile panel. (Scene navigation is via in-world
 // flight + Enter/Backspace/take-off; number keys belong to weapon selection.)
+function togglePause(): void {
+  pause.toggle();
+  touchUI.current?.block('menu', pause.visible);
+}
+
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    pause.toggle();
+    togglePause();
   } else if (e.key === 'p' || e.key === 'P') {
     profileVisible = !profileVisible;
     const lines = profileVisible ? currentProfileLines() : null;
@@ -141,6 +158,7 @@ window.addEventListener('popstate', () => {
   state = readState();
   hud.setShareUrl(window.location.href);
   manager.setScene(sceneForLocation(state.location));
+  applySceneTouch();
 });
 
 function resize(): void {
@@ -167,3 +185,17 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+
+// Launch flow: pick platform (+ first-run onboarding), then enable the mobile
+// console if the player chose touch. The game renders behind the overlay.
+const startScreen = new StartScreen(hudEl);
+void startScreen.start().then(() => {
+  startAudioOnce();
+  if (isMobile()) {
+    touch.enabled = true;
+    const controls = new TouchControls(hudEl);
+    controls.onMenu = togglePause;
+    touchUI.current = controls;
+    applySceneTouch();
+  }
+});
