@@ -53,7 +53,7 @@ export function deriveStar(seed: number): StarProfile {
 
   // Hotter, brighter stars tend to host slightly fewer detected planets here;
   // keep it modest for performance and legibility.
-  const planetCount = rangeInt(rng, 2, 8);
+  const planetCount = rangeInt(rng, 2, 6);
 
   return {
     seed,

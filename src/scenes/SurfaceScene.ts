@@ -119,7 +119,7 @@ export class SurfaceScene implements AppScene {
     // Fauna (seeded per planet). Lifeless biomes get neither.
     const lifeless = this.planet.biome === 'molten' || this.planet.biome === 'barren-rock';
     if (!lifeless) {
-      this.birds = new BirdFlock(deriveSeed(this.planet.seed, 0xb1d5), 60, birdColor(pal.foliage), heightAtLocal);
+      this.birds = new BirdFlock(deriveSeed(this.planet.seed, 0xb1d5), 90, birdColor(pal.foliage), heightAtLocal);
       this.scene.add(this.birds.mesh);
     } else {
       this.birds = null;

@@ -1,5 +1,7 @@
 import { hslToRgb, mixRGB, scaleRGB } from '../core/color.ts';
 import { clamp, clamp01, lerp } from '../core/math.ts';
+import { makeRNG } from '../core/rng.ts';
+import { deriveSeed } from '../core/hash.ts';
 import type { Biome, PlanetProfile, RGB, StarProfile } from '../universe/types.ts';
 
 // Palette generator: biome + star ⇒ a coherent color set. Built in HSL so hues
@@ -46,8 +48,24 @@ const BIOME: Record<Biome, BiomeBase> = {
 };
 
 export function biomePalette(planet: PlanetProfile, star: StarProfile): Palette {
-  const b = BIOME[planet.biome];
+  const base = BIOME[planet.biome];
   const sun = scaleRGB(star.color, 1.0);
+
+  // Per-planet jitter: shift hue/sat/lightness a little so two same-biome worlds
+  // never look identical, while staying within the biome's harmonious range.
+  const jr = makeRNG(deriveSeed(planet.seed, 0x9a1e77e));
+  const hueShift = (jr() - 0.5) * 0.07;
+  const satMul = 0.85 + jr() * 0.35;
+  const lightShift = (jr() - 0.5) * 0.09;
+  const b: BiomeBase = {
+    ...base,
+    hue: base.hue + hueShift,
+    sat: clamp01(base.sat * satMul),
+    lightLow: clamp01(base.lightLow + lightShift),
+    lightHigh: clamp01(base.lightHigh + lightShift),
+    foliageHue: base.foliageHue + hueShift * 0.5,
+    waterHue: base.waterHue + hueShift * 0.4,
+  };
 
   const terrainLow = hslToRgb(b.hue, b.sat, b.lightLow);
   const terrainHigh = hslToRgb(b.hue + 0.02, b.sat * 0.8, b.lightHigh);

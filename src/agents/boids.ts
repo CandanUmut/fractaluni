@@ -108,7 +108,7 @@ export class BirdFlock {
   private readonly maxSpeed = 26;
   private readonly maxForce = 40;
   private readonly bounds = 120;
-  private readonly bandY = 55; // flight height above player
+  private readonly bandY = 38; // flight height above player
 
   constructor(seed: number, count: number, color: RGB, heightAtLocal: (x: number, z: number) => number) {
     this.heightAtLocal = heightAtLocal;

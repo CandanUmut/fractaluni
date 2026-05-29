@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { deriveSeed } from '../core/hash.ts';
-import { clamp01, inverseLerp, lerp } from '../core/math.ts';
-import { warpedFbm2, type FbmParams } from './noise.ts';
+import { makeRNG } from '../core/rng.ts';
+import { clamp01, inverseLerp, lerp, smoothstep } from '../core/math.ts';
+import { fbm2, warpedFbm2, type FbmParams } from './noise.ts';
 import type { Biome, PlanetProfile } from '../universe/types.ts';
 import type { Palette } from '../palette/index.ts';
 
@@ -42,59 +43,75 @@ export function makeTerrain(
   palette: Palette,
 ): TerrainSampler {
   const rough = ROUGHNESS[planet.biome];
-  const amplitude = lerp(14, 78, rough);
-  const maxHeight = amplitude;
-  const fbm: FbmParams = {
-    octaves: 5,
-    lacunarity: 2.05,
-    gain: 0.5,
-    frequency: 1 / 260,
-  };
-  const warpAmp = 70;
-  const warpFreq = 1 / 320;
-  const heightSeed = deriveSeed(planetSeed, 0x7e44a1);
 
-  // Sea level: more water ⇒ higher sea. Hidden entirely for near-dry worlds.
+  // Per-planet character: each planet jitters its own scales/amplitudes so even
+  // two same-biome worlds feel different (mountainous vs rolling vs archipelago).
+  const pr = makeRNG(deriveSeed(planetSeed, 0x7e44a1));
+  const contSeed = deriveSeed(planetSeed, 0xc0117);
+  const mountSeed = deriveSeed(planetSeed, 0x33077);
+  const detailSeed = deriveSeed(planetSeed, 0xde7a11);
+
+  const contFreq = (1 / 1100) * lerp(0.7, 1.5, pr());
+  const mountFreq = (1 / 300) * lerp(0.7, 1.6, pr());
+  const detailFreq = 1 / 70;
+
+  const contAmp = lerp(26, 70, pr());
+  // Mountain height: scales with biome roughness but with a wide per-planet
+  // spread, so some worlds are alpine and others nearly flat.
+  const mountAmp = lerp(50, 230, rough) * (0.45 + pr() * 1.1);
+  const detailAmp = lerp(2, 8, pr());
+  const maxHeight = contAmp + mountAmp + detailAmp;
+
+  const warpAmp = 90;
+  const warpFreq = 1 / 420;
+  const contParams: FbmParams = { octaves: 3, lacunarity: 2, gain: 0.5, frequency: contFreq };
+  const mountParams: FbmParams = { octaves: 5, lacunarity: 2.1, gain: 0.5, frequency: mountFreq };
+  const detailParams: FbmParams = { octaves: 3, lacunarity: 2, gain: 0.5, frequency: detailFreq };
+
   const hasWater = planet.waterFraction > 0.05;
-  const seaLevel = lerp(-0.85, 0.85, planet.waterFraction) * amplitude * 0.55;
-
-  // Ridged shaping blended in for rough worlds → sharper mountain spines.
-  const ridgeMix = rough * 0.5;
+  // Sea level sits relative to the continental layer: more water ⇒ higher sea ⇒
+  // more ocean. Dry worlds drop it well below the land so no water shows.
+  const seaLevel = lerp(-0.62, 0.62, planet.waterFraction) * contAmp;
 
   const heightAt = (x: number, z: number): number => {
-    const n = warpedFbm2(heightSeed, x, z, fbm, warpAmp, warpFreq);
-    const ridged = 1 - 2 * Math.abs(n); // ridge profile in [-1,1]
-    const shaped = lerp(n, ridged, ridgeMix);
-    return shaped * amplitude;
+    // Continents (domain-warped) define landmasses and where the sea sits.
+    const cont = warpedFbm2(contSeed, x, z, contParams, warpAmp, warpFreq);
+    const land = smoothstep(-0.15, 0.28, cont);
+    // Ridged mountains, sharpened, rising only on land.
+    const m = fbm2(mountSeed, x, z, mountParams);
+    let ridge = 1 - Math.abs(m);
+    ridge *= ridge;
+    const detail = fbm2(detailSeed, x, z, detailParams);
+    return cont * contAmp + ridge * land * mountAmp + detail * detailAmp;
   };
 
   const { terrainLow, terrainHigh, water } = palette;
-  const isCold = planet.biome === 'frozen' || planet.biome === 'tundra';
-  const shoreBand = amplitude * 0.06;
+  // Snow line tracks the planet's surface temperature: cold worlds are white
+  // down to sea level (ice worlds); temperate worlds only cap their peaks.
+  const coldFactor = clamp01((292 - planet.surfaceTemp) / 70);
+  const snowAltitude = lerp(maxHeight * 1.5, seaLevel, coldFactor);
+  const shoreBand = Math.max(1.5, contAmp * 0.05);
 
   const writeColor = (h: number, target: Float32Array, o: number): void => {
     let r: number;
     let g: number;
     let b: number;
     if (hasWater && h < seaLevel) {
-      // Underwater: darken toward deep water.
-      const d = clamp01(inverseLerp(seaLevel, seaLevel - amplitude * 0.5, h));
+      const d = clamp01(inverseLerp(seaLevel, seaLevel - contAmp * 0.8, h));
       r = lerp(water.r, water.r * 0.4, d);
       g = lerp(water.g, water.g * 0.4, d);
       b = lerp(water.b, water.b * 0.5, d);
     } else if (hasWater && h < seaLevel + shoreBand) {
-      // Shoreline: lighten toward a sandy band.
       r = clamp01(terrainLow.r * 1.25 + 0.08);
       g = clamp01(terrainLow.g * 1.2 + 0.06);
       b = clamp01(terrainLow.b * 1.05 + 0.03);
     } else {
-      const t = clamp01(inverseLerp(seaLevel, maxHeight, h));
+      const t = clamp01(inverseLerp(seaLevel, maxHeight * 0.75, h));
       r = lerp(terrainLow.r, terrainHigh.r, t);
       g = lerp(terrainLow.g, terrainHigh.g, t);
       b = lerp(terrainLow.b, terrainHigh.b, t);
-      // Snow caps on cold worlds' peaks.
-      if (isCold && t > 0.62) {
-        const s = clamp01(inverseLerp(0.62, 0.95, t));
+      if (h > snowAltitude) {
+        const s = clamp01(inverseLerp(snowAltitude, snowAltitude + maxHeight * 0.12, h));
         r = lerp(r, 0.95, s);
         g = lerp(g, 0.96, s);
         b = lerp(b, 0.98, s);

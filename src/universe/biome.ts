@@ -23,26 +23,22 @@ export function classifyBiome(
   if (surfaceTemp >= MOLTEN) return 'molten';
   if (atmosphere < 0.06) return 'barren-rock';
 
-  // Frozen worlds.
+  // Frozen / cold worlds.
   if (surfaceTemp < FREEZE) return 'frozen';
-
-  // Cold-but-not-frozen.
   if (surfaceTemp < COLD) return 'tundra';
 
-  // Clement range: classify by temperature and how wet it is.
-  const wet = waterFraction > 0.6;
-  const moist = waterFraction > 0.3;
-
+  // Clement → hot range: water fraction decides the character within each band.
   if (surfaceTemp >= HOT) {
-    return moist ? 'arid' : 'desert';
+    if (waterFraction > 0.5) return 'tropical';
+    return waterFraction > 0.25 ? 'arid' : 'desert';
   }
   if (surfaceTemp >= WARM) {
-    if (wet) return 'tropical';
-    return moist ? 'temperate' : 'arid';
+    if (waterFraction > 0.7) return 'tropical';
+    if (waterFraction > 0.4) return 'temperate';
+    return waterFraction > 0.2 ? 'arid' : 'desert';
   }
   // COLD..WARM — the temperate band.
-  if (waterFraction > 0.85) return 'oceanic';
-  if (wet) return 'temperate';
-  if (moist) return 'temperate';
+  if (waterFraction > 0.7) return 'oceanic';
+  if (waterFraction > 0.35) return 'temperate';
   return 'tundra';
 }

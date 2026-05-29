@@ -4,6 +4,9 @@ import type { BloomSettings } from '../render/composer.ts';
 import { FloatingOrigin } from '../core/floatingOrigin.ts';
 import { Starfield, CELL_SIZE, type StarRecord } from '../gen/starfield.ts';
 import { FlyController } from './controls/FlyController.ts';
+import { Cockpit } from '../render/cockpit.ts';
+import { makeRNG } from '../core/rng.ts';
+import { deriveSeed } from '../core/hash.ts';
 
 export interface StarSelection {
   cell: [number, number, number];
@@ -29,6 +32,8 @@ export class GalaxyScene implements AppScene {
   private readonly starfield: Starfield;
   private readonly controller: FlyController;
   private readonly highlight: THREE.Mesh;
+  private readonly cockpit = new Cockpit();
+  private readonly nebula: THREE.Mesh;
   private candidate: StarRecord | null = null;
 
   constructor(universeSeed: number, dom: HTMLElement) {
@@ -37,9 +42,17 @@ export class GalaxyScene implements AppScene {
     this.camera = new THREE.PerspectiveCamera(70, 1, 0.5, 14000);
     this.camera.position.set(0, 0, 0);
 
+    // Dim nebula backdrop so space isn't flat black (stars still pop on top).
+    this.nebula = makeNebula(universeSeed);
+    this.scene.add(this.nebula);
+
     this.starfield = new Starfield(universeSeed, 3);
     this.scene.add(this.starfield.points);
     this.starfield.update(this.origin, true);
+
+    // Cockpit frame fixed to the camera (camera must be in the graph to render it).
+    this.camera.add(this.cockpit.group);
+    this.scene.add(this.camera);
 
     // Billboarded selection ring.
     const ringMat = new THREE.MeshBasicMaterial({
@@ -74,6 +87,9 @@ export class GalaxyScene implements AppScene {
     this.origin.rebase(this.camera.position);
     this.starfield.update(this.origin);
 
+    // Keep the nebula centered on the camera so it reads as infinitely distant.
+    this.nebula.position.copy(this.camera.position);
+
     // Nearest-star selection.
     this.candidate = this.starfield.nearestStar(
       this.camera.position.x,
@@ -99,6 +115,9 @@ export class GalaxyScene implements AppScene {
     window.removeEventListener('keydown', this.onKeyDown);
     this.controller.dispose();
     this.starfield.dispose();
+    this.cockpit.dispose();
+    this.nebula.geometry.dispose();
+    (this.nebula.material as THREE.Material).dispose();
     this.highlight.geometry.dispose();
     (this.highlight.material as THREE.Material).dispose();
   }
@@ -118,4 +137,39 @@ export class GalaxyScene implements AppScene {
     }
     return lines;
   }
+}
+
+/** Big, dim, inside-out nebula sphere. Cheap layered-sine "clouds" tinted by two
+ *  seed-derived colors, so each universe has its own deep-space backdrop. */
+function makeNebula(seed: number): THREE.Mesh {
+  const rng = makeRNG(deriveSeed(seed, 0x4eb01a));
+  const a = new THREE.Color().setHSL(rng(), 0.6, 0.06);
+  const b = new THREE.Color().setHSL(rng(), 0.55, 0.05);
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: { uColA: { value: a }, uColB: { value: b } },
+    vertexShader: /* glsl */ `
+      varying vec3 vDir;
+      void main() {
+        vDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec3 vDir;
+      uniform vec3 uColA;
+      uniform vec3 uColB;
+      void main() {
+        float c1 = sin(vDir.x * 3.0 + 1.0) * sin(vDir.y * 2.0) * sin(vDir.z * 2.5);
+        float c2 = sin(vDir.x * 5.0) * cos(vDir.z * 4.0 + 2.0);
+        float t = clamp(0.5 + 0.5 * (c1 * 0.6 + c2 * 0.4), 0.0, 1.0);
+        vec3 col = mix(uColA, uColB, t) * (0.6 + 0.4 * t);
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(12000, 24, 16), mat);
+  mesh.frustumCulled = false;
+  return mesh;
 }

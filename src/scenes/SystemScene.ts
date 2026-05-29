@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { AppScene } from './AppScene.ts';
 import type { BloomSettings } from '../render/composer.ts';
 import { FlyController } from './controls/FlyController.ts';
+import { Cockpit } from '../render/cockpit.ts';
 import { deriveStarAt, deriveSystem } from '../universe/index.ts';
 import { biomePalette } from '../palette/index.ts';
 import { rgbToHex, scaleRGB } from '../core/color.ts';
@@ -37,6 +38,7 @@ export class SystemScene implements AppScene {
   private readonly bodies: PlanetBody[] = [];
   private readonly controller: FlyController;
   private readonly highlight: THREE.Mesh;
+  private readonly cockpit = new Cockpit();
   private time = 0;
   private candidate: PlanetBody | null = null;
   private readonly disposables: { dispose(): void }[] = [];
@@ -98,6 +100,11 @@ export class SystemScene implements AppScene {
 
     this.controller = new FlyController(this.camera, dom);
     this.controller.baseSpeed = clamp(outer * 0.25, 30, 400);
+
+    // Cockpit frame fixed to the camera.
+    this.camera.add(this.cockpit.group);
+    this.scene.add(this.camera);
+
     window.addEventListener('keydown', this.onKeyDown);
   }
 
@@ -227,6 +234,7 @@ export class SystemScene implements AppScene {
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown);
     this.controller.dispose();
+    this.cockpit.dispose();
     for (const d of this.disposables) d.dispose();
   }
 

@@ -38,9 +38,9 @@ describe('derivation is reproducible and matches golden snapshot', () => {
     expect(star.planetCount).toBe(4);
 
     const planet = derivePlanetAt(u, [3, -1, 2], 1, 0);
-    expect(planet.orbitalRadius).toBeCloseTo(1.05254, 4);
-    expect(planet.surfaceTemp).toBeCloseTo(609.646, 2);
-    expect(planet.biome).toBe<Biome>('arid');
+    expect(planet.orbitalRadius).toBeCloseTo(1.49407, 4);
+    expect(planet.surfaceTemp).toBeCloseTo(465.489, 2);
+    expect(planet.biome).toBe<Biome>('tropical');
   });
 
   test('repeated derivation is bit-identical', () => {
@@ -89,5 +89,29 @@ describe('biome falls out of physics, not rolls', () => {
     expect(biomes.size).toBeGreaterThanOrEqual(5);
     // Inner planets are essentially always hotter than outer ones (T_eq ∝ 1/√a).
     expect(hotterInnerThanOuter / comparisons).toBeGreaterThan(0.95);
+  });
+
+  test('biome distribution is varied, not hot/dry-dominated', () => {
+    const u = hashString('distribution-seed');
+    const counts: Record<string, number> = {};
+    let total = 0;
+    for (let c = 0; c < 40; c++) {
+      const cell: [number, number, number] = [c, ((c * 7) % 11) - 5, -c];
+      for (let s = 0; s < 4; s++) {
+        const star = deriveStarAt(u, cell, s);
+        for (let p = 0; p < star.planetCount; p++) {
+          const b = derivePlanetAt(u, cell, s, p).biome;
+          counts[b] = (counts[b] ?? 0) + 1;
+          total++;
+        }
+      }
+    }
+    const get = (k: Biome): number => counts[k] ?? 0;
+    // At least 7 distinct biomes, and no single one dominates.
+    expect(Object.keys(counts).length).toBeGreaterThanOrEqual(7);
+    expect(Math.max(...Object.values(counts)) / total).toBeLessThan(0.45);
+    // Wet and cold worlds both occur (the old climate baked everything dry/hot).
+    expect(get('oceanic') + get('temperate') + get('tropical')).toBeGreaterThan(total * 0.1);
+    expect(get('frozen') + get('tundra')).toBeGreaterThan(total * 0.1);
   });
 });
