@@ -22,6 +22,8 @@ export interface ResourceType {
 }
 
 export const RESOURCES: Record<string, ResourceType> = {
+  // Drilled straight from the ground anywhere on a planet — abundant, low value.
+  regolith: { id: 'regolith', name: 'Regolith', tier: 'common', color: 0x8c7a5e, value: 1, hardness: 1 },
   ferrite: { id: 'ferrite', name: 'Ferrite', tier: 'common', color: 0x9aa3b0, value: 5, hardness: 1 },
   silica: { id: 'silica', name: 'Silica', tier: 'common', color: 0xd8d2b8, value: 4, hardness: 1 },
   ice: { id: 'ice', name: 'Ice', tier: 'common', color: 0xbfe6ff, value: 3, hardness: 1 },
