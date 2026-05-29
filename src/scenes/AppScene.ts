@@ -1,5 +1,6 @@
 import type * as THREE from 'three';
 import type { BloomSettings } from '../render/composer.ts';
+import type { ColorGradeSettings } from '../render/colorGrade.ts';
 
 /** A swappable scene owned by the SceneManager. Each scene provides its own
  *  Three.js scene graph + camera, and manages its own lifecycle. The renderer
@@ -10,6 +11,9 @@ export interface AppScene {
 
   /** Optional per-scene bloom; falls back to a default when absent. */
   readonly bloom?: BloomSettings;
+
+  /** Optional per-scene color grade; falls back to neutral when absent. */
+  readonly colorGrade?: ColorGradeSettings;
 
   /** Advance simulation by dt seconds. */
   update(dt: number): void;

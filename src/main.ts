@@ -4,6 +4,7 @@ import { SystemScene } from './scenes/SystemScene.ts';
 import { SurfaceScene } from './scenes/SurfaceScene.ts';
 import type { AppScene } from './scenes/AppScene.ts';
 import { Hud } from './ui/hud.ts';
+import { Transition } from './ui/transition.ts';
 import { readState, writeState, type Location, type UniverseState } from './ui/urlState.ts';
 import { hashString } from './core/hash.ts';
 import { profileToLines } from './universe/debug.ts';
@@ -52,14 +53,28 @@ function sceneForLocation(loc: Location): AppScene {
   }
 }
 
-function goTo(loc: Location): void {
+const transition = new Transition();
+let navigating = false;
+const nextFrame = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()));
+
+async function goTo(loc: Location): Promise<void> {
+  if (navigating) return;
+  navigating = true;
+  await transition.cover();
   state = { ...state, location: loc };
   writeState(state);
+  hud.setShareUrl(window.location.href);
   manager.setScene(sceneForLocation(loc));
   if (profileVisible) hud.setProfile(currentProfileLines());
+  // Let a couple of frames render the new scene before revealing.
+  await nextFrame();
+  await nextFrame();
+  await transition.reveal();
+  navigating = false;
 }
 
 manager.setScene(sceneForLocation(state.location));
+hud.setShareUrl(window.location.href);
 
 // Derived-profile debug panel: prints the star/planet derivation for the current
 // location (defaults to star 0 / planet 0 when the location is less specific).
@@ -91,6 +106,7 @@ console.log(`universe seed "${state.seed}" → u32 ${hashString(state.seed)}`);
 // Reflect browser back/forward navigation.
 window.addEventListener('popstate', () => {
   state = readState();
+  hud.setShareUrl(window.location.href);
   manager.setScene(sceneForLocation(state.location));
 });
 

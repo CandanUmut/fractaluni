@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { AppScene } from './AppScene.ts';
 import { PostFX, type BloomSettings } from '../render/composer.ts';
+import { NEUTRAL_GRADE } from '../render/colorGrade.ts';
 
 const DEFAULT_BLOOM: BloomSettings = { strength: 0.6, radius: 0.6, threshold: 0.85 };
 
@@ -46,6 +47,7 @@ export class SceneManager {
     this.current = next;
     this.postfx.setTarget(next.scene, next.camera);
     this.postfx.setBloom(next.bloom ?? DEFAULT_BLOOM);
+    this.postfx.setColorGrade(next.colorGrade ?? NEUTRAL_GRADE);
     next.resize(this.width, this.height);
   }
 

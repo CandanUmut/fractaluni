@@ -6,6 +6,8 @@ export class Hud {
   private readonly fpsEl: HTMLElement;
   private readonly bodyEl: HTMLElement;
   private readonly profileEl: HTMLElement;
+  private readonly copyBtn: HTMLButtonElement;
+  private shareUrl = '';
 
   // FPS smoothing
   private frames = 0;
@@ -51,6 +53,33 @@ export class Hud {
     this.profileEl.style.whiteSpace = 'pre';
     this.profileEl.style.display = 'none';
     this.root.appendChild(this.profileEl);
+
+    // Bottom-right "copy shareable URL" button (interactive → pointer-events on).
+    this.copyBtn = document.createElement('button');
+    this.copyBtn.textContent = '⧉ copy share URL';
+    const bs = this.copyBtn.style;
+    bs.position = 'absolute';
+    bs.bottom = '8px';
+    bs.right = '8px';
+    bs.pointerEvents = 'auto';
+    bs.cursor = 'pointer';
+    bs.font = 'inherit';
+    bs.color = '#cfe3ff';
+    bs.background = 'rgba(8,12,22,0.55)';
+    bs.border = '1px solid rgba(120,160,220,0.3)';
+    bs.borderRadius = '6px';
+    bs.padding = '6px 10px';
+    this.copyBtn.addEventListener('click', () => {
+      void navigator.clipboard?.writeText(this.shareUrl).then(() => {
+        this.copyBtn.textContent = '✓ copied';
+        setTimeout(() => (this.copyBtn.textContent = '⧉ copy share URL'), 1200);
+      });
+    });
+    this.root.appendChild(this.copyBtn);
+  }
+
+  setShareUrl(url: string): void {
+    this.shareUrl = url;
   }
 
   /** Show/hide the derived-profile debug panel. Pass null to hide. */

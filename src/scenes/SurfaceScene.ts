@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { AppScene } from './AppScene.ts';
 import type { BloomSettings } from '../render/composer.ts';
+import type { ColorGradeSettings } from '../render/colorGrade.ts';
 import { deriveStarAt, derivePlanet } from '../universe/index.ts';
 import { biomePalette } from '../palette/index.ts';
 import { makeTerrain, ChunkManager, CHUNK_SIZE } from '../gen/terrain.ts';
@@ -23,6 +24,7 @@ export class SurfaceScene implements AppScene {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly bloom: BloomSettings = { strength: 0.5, radius: 0.7, threshold: 0.65 };
+  readonly colorGrade: ColorGradeSettings;
 
   onTakeOff: (() => void) | null = null;
 
@@ -52,6 +54,19 @@ export class SurfaceScene implements AppScene {
     this.planet = derivePlanet(this.star, planetIndex);
     const pal = biomePalette(this.planet, this.star);
     this.sampler = makeTerrain(this.planet, this.planet.seed, pal);
+
+    // Color grade tints the whole scene toward the star's light for a coherent,
+    // system-specific atmosphere.
+    this.colorGrade = {
+      tint: {
+        r: lerp(1, pal.sun.r, 0.2),
+        g: lerp(1, pal.sun.g, 0.2),
+        b: lerp(1, pal.sun.b, 0.2),
+      },
+      exposure: 1.04,
+      contrast: 1.08,
+      saturation: 1.12,
+    };
 
     // Sky/fog/background.
     this.scene.background = new THREE.Color(rgbToHex(pal.skyHorizon));
@@ -171,8 +186,11 @@ export class SurfaceScene implements AppScene {
 
   hudLines(): string[] {
     const p = this.planet;
+    const s = this.star;
     const lines = [
-      `scene: surface — ${p.biome}  ${p.surfaceTemp.toFixed(0)}K  gravity ${p.gravity.toFixed(2)}g`,
+      `scene: surface — ${p.biome}${p.inHabitableZone ? ' (habitable zone)' : ''}`,
+      `star ${s.spectralClass} ${s.temperature.toFixed(0)}K · orbit ${p.orbitalRadius.toFixed(2)} AU`,
+      `T_surf ${p.surfaceTemp.toFixed(0)}K · gravity ${p.gravity.toFixed(2)}g · water ${p.waterFraction.toFixed(2)} · atmo ${p.atmosphere.toFixed(2)}`,
       `mode: ${this.controller.mode}  (G to toggle walk/fly)`,
     ];
     if (!this.controller.isLocked) {

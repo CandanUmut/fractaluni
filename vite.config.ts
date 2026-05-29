@@ -8,6 +8,13 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: false,
+    chunkSizeWarningLimit: 700, // the three.js vendor chunk is inherently ~500kB
+    rollupOptions: {
+      output: {
+        // Split Three.js into its own long-cached vendor chunk.
+        manualChunks: (id) => (id.includes('node_modules/three') ? 'three' : undefined),
+      },
+    },
   },
   test: {
     environment: 'node',

@@ -3,6 +3,8 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import type { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { makeColorGradePass, type ColorGradeSettings } from './colorGrade.ts';
 
 export interface BloomSettings {
   strength: number;
@@ -17,6 +19,7 @@ export class PostFX {
   readonly composer: EffectComposer;
   private readonly renderPass: RenderPass;
   readonly bloom: UnrealBloomPass;
+  private readonly grade: ShaderPass;
 
   constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
     this.composer = new EffectComposer(renderer);
@@ -27,7 +30,18 @@ export class PostFX {
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.9, 0.6, 0.0);
     this.composer.addPass(this.bloom);
 
+    this.grade = makeColorGradePass();
+    this.composer.addPass(this.grade);
+
     this.composer.addPass(new OutputPass());
+  }
+
+  setColorGrade(s: ColorGradeSettings): void {
+    const u = this.grade.uniforms;
+    u.uTint!.value.setRGB(s.tint.r, s.tint.g, s.tint.b);
+    u.uExposure!.value = s.exposure;
+    u.uContrast!.value = s.contrast;
+    u.uSaturation!.value = s.saturation;
   }
 
   setTarget(scene: THREE.Scene, camera: THREE.Camera): void {
