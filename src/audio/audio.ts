@@ -10,10 +10,11 @@
 
 export type SoundName =
   | 'gunshot' | 'impact' | 'explosion' | 'throw' | 'equip' | 'drill' | 'extract'
-  | 'pickup' | 'step' | 'land' | 'jet' | 'attack' | 'hurt' | 'death' | 'ambient';
+  | 'pickup' | 'step' | 'land' | 'jet' | 'attack' | 'hurt' | 'death' | 'ambient'
+  | 'background' | 'spaceship';
 
 const EXTS = ['mp3', 'ogg', 'wav'];
-const NAMES: SoundName[] = ['gunshot', 'impact', 'explosion', 'throw', 'equip', 'drill', 'extract', 'pickup', 'step', 'land', 'jet', 'attack', 'hurt', 'death', 'ambient'];
+const NAMES: SoundName[] = ['gunshot', 'impact', 'explosion', 'throw', 'equip', 'drill', 'extract', 'pickup', 'step', 'land', 'jet', 'attack', 'hurt', 'death', 'ambient', 'background', 'spaceship'];
 
 export class AudioManager {
   enabled = true;
@@ -25,6 +26,12 @@ export class AudioManager {
   private loop: { src: AudioBufferSourceNode | OscillatorNode; nodes: AudioNode[] } | null = null;
   private ambient: AudioNode[] | null = null;
   private loadStarted = false;
+  // Looping music + ship engine (their own slots, distinct from the drill loop).
+  private music: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
+  private engine: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
+  private musicWanted = false;
+  private musicVol = 0.18;
+  private engineWanted = false;
 
   init(): void {
     if (!this.enabled || this.ctx) return;
@@ -69,6 +76,9 @@ export class AudioManager {
         const res = await fetch(`${this.base()}sounds/${name}.${ext}`);
         if (!res.ok) continue;
         this.buffers.set(name, await this.ctx.decodeAudioData(await res.arrayBuffer()));
+        // Start loops that were requested before their file finished loading.
+        if (name === 'background') this.tryStartMusic();
+        if (name === 'spaceship') this.tryStartEngine();
         return;
       } catch {
         /* next */
@@ -157,6 +167,73 @@ export class AudioManager {
       /* ignore */
     }
     this.loop = null;
+  }
+
+  /** Loop background music quietly (uses the `background` file). */
+  startMusic(volume = 0.18): void {
+    if (!this.enabled) return;
+    this.musicWanted = true;
+    this.musicVol = volume;
+    this.init();
+    this.tryStartMusic();
+  }
+
+  private tryStartMusic(): void {
+    if (!this.ctx || !this.master || this.music || !this.musicWanted) return;
+    const buf = this.buffers.get('background');
+    if (!buf) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const gain = this.ctx.createGain();
+    gain.gain.value = this.musicVol;
+    src.connect(gain);
+    gain.connect(this.master);
+    src.start();
+    this.music = { src, gain };
+  }
+
+  setMusicVolume(v: number): void {
+    this.musicVol = v;
+    if (this.music) this.music.gain.gain.value = v;
+  }
+
+  /** Ship engine loop (uses the `spaceship` file); level [0,1] tracks speed. */
+  startEngine(): void {
+    if (!this.enabled) return;
+    this.engineWanted = true;
+    this.init();
+    this.tryStartEngine();
+  }
+
+  private tryStartEngine(): void {
+    if (!this.ctx || !this.master || this.engine || !this.engineWanted) return;
+    const buf = this.buffers.get('spaceship');
+    if (!buf) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.12;
+    src.connect(gain);
+    gain.connect(this.master);
+    src.start();
+    this.engine = { src, gain };
+  }
+
+  setEngineLevel(level: number): void {
+    if (this.engine) this.engine.gain.gain.value = 0.1 + Math.max(0, Math.min(1, level)) * 0.35;
+  }
+
+  stopEngine(): void {
+    this.engineWanted = false;
+    if (!this.engine) return;
+    try {
+      this.engine.src.stop();
+    } catch {
+      /* ignore */
+    }
+    this.engine = null;
   }
 
   /** A subtle ambient pad (uses an `ambient` file if present, else synth). */

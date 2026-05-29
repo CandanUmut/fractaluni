@@ -9,6 +9,7 @@ import { WarpStreaks } from '../render/warp.ts';
 import { makeRNG } from '../core/rng.ts';
 import { deriveSeed } from '../core/hash.ts';
 import { clamp } from '../core/math.ts';
+import { audio } from '../audio/audio.ts';
 
 export interface StarSelection {
   cell: [number, number, number];
@@ -36,6 +37,7 @@ export class GalaxyScene implements AppScene {
   private readonly highlight: THREE.Mesh;
   private readonly nebula: THREE.Mesh;
   private candidate: StarRecord | null = null;
+  private engineOn = false;
 
   // scratch
   private readonly camOffset = new THREE.Vector3();
@@ -111,6 +113,13 @@ export class GalaxyScene implements AppScene {
     this.ship.setControls(clamp(-this.controller.turnRate * 0.02, -0.6, 0.6), speed);
     this.ship.update(dt);
 
+    // Ship engine audio (starts once the player is flying).
+    if (this.controller.isLocked && !this.engineOn) {
+      audio.startEngine();
+      this.engineOn = true;
+    }
+    if (this.engineOn) audio.setEngineLevel(speed);
+
     // Third-person chase camera (offset behind + above, with lag).
     this.camOffset.set(0, 1.8, 8.5).applyQuaternion(ship.quaternion).add(ship.position);
     this.desiredCam.copy(this.camOffset);
@@ -137,6 +146,7 @@ export class GalaxyScene implements AppScene {
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown);
+    audio.stopEngine();
     this.controller.dispose();
     this.starfield.dispose();
     this.ship.dispose();

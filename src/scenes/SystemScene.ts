@@ -5,6 +5,7 @@ import { FlyController } from './controls/FlyController.ts';
 import { Spaceship } from '../render/spaceship.ts';
 import { deriveStarAt, deriveSystem } from '../universe/index.ts';
 import { planetResources, planetDanger } from '../universe/resources.ts';
+import { audio } from '../audio/audio.ts';
 import { biomePalette } from '../palette/index.ts';
 import { rgbToHex, scaleRGB } from '../core/color.ts';
 import { clamp, TAU } from '../core/math.ts';
@@ -41,6 +42,7 @@ export class SystemScene implements AppScene {
   private readonly highlight: THREE.Mesh;
   private readonly ship = new Spaceship();
   private readonly camOffset = new THREE.Vector3();
+  private engineOn = false;
   private time = 0;
   private candidate: PlanetBody | null = null;
   private readonly disposables: { dispose(): void }[] = [];
@@ -240,6 +242,11 @@ export class SystemScene implements AppScene {
     const speed = clamp(this.controller.speedFraction, 0, 1);
     this.ship.setControls(clamp(-this.controller.turnRate * 0.02, -0.6, 0.6), speed);
     this.ship.update(dt);
+    if (this.controller.isLocked && !this.engineOn) {
+      audio.startEngine();
+      this.engineOn = true;
+    }
+    if (this.engineOn) audio.setEngineLevel(speed);
     this.camOffset.set(0, 1.8, 8.5).applyQuaternion(ship.quaternion).add(ship.position);
     this.camera.position.lerp(this.camOffset, 1 - Math.exp(-dt * 6));
     this.camera.quaternion.slerp(ship.quaternion, 1 - Math.exp(-dt * 5));
@@ -278,6 +285,7 @@ export class SystemScene implements AppScene {
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown);
+    audio.stopEngine();
     this.controller.dispose();
     this.ship.dispose();
     this.chartEl?.remove();

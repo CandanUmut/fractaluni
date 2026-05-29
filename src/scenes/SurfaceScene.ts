@@ -394,7 +394,6 @@ export class SurfaceScene implements AppScene {
 
   private onPointerDown = (e: PointerEvent): void => {
     audio.init(); // unlock + load audio on first user gesture
-    audio.startAmbient();
     if (document.pointerLockElement !== this.dom || e.button !== 0) return;
     this.current.primaryDown(this.buildCtx());
   };

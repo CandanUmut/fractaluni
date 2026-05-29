@@ -36,6 +36,17 @@ function applyFov(v: number): void {
 }
 pause.onFov = applyFov;
 
+// Start looping background music on the first user gesture (browsers require one).
+let audioStarted = false;
+function startAudioOnce(): void {
+  if (audioStarted) return;
+  audioStarted = true;
+  audio.init();
+  audio.startMusic(0.16); // quiet background loop
+}
+window.addEventListener('pointerdown', startAudioOnce);
+window.addEventListener('keydown', startAudioOnce);
+
 let state: UniverseState = readState();
 // Ensure the seed is always present in the address bar (Phase-0 done criterion).
 writeState(state);
