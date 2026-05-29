@@ -30,6 +30,24 @@ so single-precision floats never jitter far from the camera.
 - `p` toggles the derived-profile debug panel. Bottom-right button copies the
   shareable URL.
 
+### Living world (v2) — on a surface
+
+The planet you stand on is **writable** and runs a local ecosystem. Your changes
+persist (IndexedDB, keyed by universe + planet); the cosmos stays pure math, the
+sparse diff is the only stored state.
+
+- **Sim/time:** `O` overlay · `I` cycle field (vegetation/moisture/temperature/
+  herbivore/predator) · `K` pause · `L` speed · `J` skip ahead.
+- **Transform:** `X` gather (seed/sample) · `F` plant · `C` clear · `V` dig water
+  · `H` introduce herbivores · `Y` introduce predators · `B` region-scale tools
+  (unlocks after a few edits).
+- **Survive:** `E` eat (forage/hunt). Energy/warmth/food/vitality bars; hazards
+  scale with the planet (molten/airless = lethal & time-limited). Death wakes you
+  at your landing site (no permadeath).
+
+Return to a planet you changed and the ecosystem **catches up** for the time you
+were away.
+
 ## Develop
 
 ```bash

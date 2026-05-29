@@ -74,6 +74,7 @@ export class SurfaceScene implements AppScene {
   private regionMode = false;
   private actionsPerformed = 0;
   private caughtUp = '';
+  private caughtUpT = 0;
 
   // v2 Phase D: lightly-gathered resources spent on embodied transformation.
   private seeds = 3;
@@ -222,7 +223,15 @@ export class SurfaceScene implements AppScene {
     }
 
     window.addEventListener('keydown', this.onKeyDown);
+    // Persistence robustness: also save if the tab is hidden or closed.
+    window.addEventListener('pagehide', this.onPageHide);
+    document.addEventListener('visibilitychange', this.onVisibility);
   }
+
+  private onPageHide = (): void => this.persist();
+  private onVisibility = (): void => {
+    if (document.visibilityState === 'hidden') this.persist();
+  };
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if ((e.key === 'Backspace' || e.key === 't' || e.key === 'T') && this.onTakeOff) {
@@ -464,6 +473,7 @@ export class SurfaceScene implements AppScene {
     const steps = Math.min(800, Math.round(seconds / 0.5));
     for (let i = 0; i < steps; i++) this.eco.step(0.5);
     this.caughtUp = `the world moved on (~${Math.round(seconds)}s while away)`;
+    this.caughtUpT = 9;
   }
 
   update(dt: number): void {
@@ -521,6 +531,11 @@ export class SurfaceScene implements AppScene {
     if (this.survival.update(dt, { moving: moved, localVegetation: localVeg })) {
       this.respawn();
     }
+
+    if (this.caughtUpT > 0) {
+      this.caughtUpT -= dt;
+      if (this.caughtUpT <= 0) this.caughtUp = '';
+    }
     // Debug overlay (player cell relative to the sim grid origin).
     const absX = this.originCX * CHUNK_SIZE + this.camera.position.x;
     const absZ = this.originCZ * CHUNK_SIZE + this.camera.position.z;
@@ -541,6 +556,8 @@ export class SurfaceScene implements AppScene {
     this.markerGeo.dispose();
     this.markerMat.dispose();
     window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('pagehide', this.onPageHide);
+    document.removeEventListener('visibilitychange', this.onVisibility);
     this.controller.dispose();
     this.chunks.dispose();
     this.flora.dispose();
