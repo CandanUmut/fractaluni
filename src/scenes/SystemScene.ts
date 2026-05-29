@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { AppScene } from './AppScene.ts';
 import type { BloomSettings } from '../render/composer.ts';
 import { FlyController } from './controls/FlyController.ts';
-import { Cockpit } from '../render/cockpit.ts';
+import { Spaceship } from '../render/spaceship.ts';
 import { deriveStarAt, deriveSystem } from '../universe/index.ts';
 import { biomePalette } from '../palette/index.ts';
 import { rgbToHex, scaleRGB } from '../core/color.ts';
@@ -38,7 +38,8 @@ export class SystemScene implements AppScene {
   private readonly bodies: PlanetBody[] = [];
   private readonly controller: FlyController;
   private readonly highlight: THREE.Mesh;
-  private readonly cockpit = new Cockpit();
+  private readonly ship = new Spaceship();
+  private readonly camOffset = new THREE.Vector3();
   private time = 0;
   private candidate: PlanetBody | null = null;
   private readonly disposables: { dispose(): void }[] = [];
@@ -85,6 +86,11 @@ export class SystemScene implements AppScene {
     this.camera.position.set(0, outer * 0.55, outer * 1.15);
     this.camera.lookAt(0, 0, 0);
 
+    // Ship spawns out near the system edge, facing inward toward the star.
+    this.ship.group.position.set(0, outer * 0.32, outer * 1.05);
+    this.ship.group.lookAt(0, 0, 0);
+    this.scene.add(this.ship.group);
+
     // Selection ring.
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0xbfe0ff,
@@ -98,12 +104,8 @@ export class SystemScene implements AppScene {
     this.scene.add(this.highlight);
     this.disposables.push(this.highlight.geometry, ringMat);
 
-    this.controller = new FlyController(this.camera, dom);
+    this.controller = new FlyController(this.ship.group, dom);
     this.controller.baseSpeed = clamp(outer * 0.25, 30, 400);
-
-    // Cockpit frame fixed to the camera.
-    this.camera.add(this.cockpit.group);
-    this.scene.add(this.camera);
 
     window.addEventListener('keydown', this.onKeyDown);
   }
@@ -143,7 +145,7 @@ export class SystemScene implements AppScene {
       angularSpeed,
       phase: p.orbitalPhase,
       worldRadius,
-      selectDist: worldRadius * 3 + 6,
+      selectDist: worldRadius * 4 + 14,
     });
   }
 
@@ -199,17 +201,26 @@ export class SystemScene implements AppScene {
     this.time += dt;
     this.controller.update(dt);
 
+    // Ship banking + engine; third-person chase camera with lag.
+    const ship = this.ship.group;
+    const speed = clamp(this.controller.speedFraction, 0, 1);
+    this.ship.setControls(clamp(-this.controller.turnRate * 0.02, -0.6, 0.6), speed);
+    this.ship.update(dt);
+    this.camOffset.set(0, 1.8, 8.5).applyQuaternion(ship.quaternion).add(ship.position);
+    this.camera.position.lerp(this.camOffset, 1 - Math.exp(-dt * 6));
+    this.camera.quaternion.slerp(ship.quaternion, 1 - Math.exp(-dt * 5));
+
     for (const b of this.bodies) {
       const a = b.phase + this.time * b.angularSpeed;
       b.mesh.position.set(Math.cos(a) * b.orbitWorld, 0, Math.sin(a) * b.orbitWorld);
       b.mesh.rotation.y += dt * 0.2;
     }
 
-    // Nearest planet within its selection distance.
+    // Nearest planet to the ship within its selection distance.
     this.candidate = null;
     let bestD2 = Infinity;
     for (const b of this.bodies) {
-      const d2 = this.camera.position.distanceToSquared(b.mesh.position);
+      const d2 = ship.position.distanceToSquared(b.mesh.position);
       if (d2 < b.selectDist * b.selectDist && d2 < bestD2) {
         bestD2 = d2;
         this.candidate = b;
@@ -234,7 +245,7 @@ export class SystemScene implements AppScene {
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown);
     this.controller.dispose();
-    this.cockpit.dispose();
+    this.ship.dispose();
     for (const d of this.disposables) d.dispose();
   }
 

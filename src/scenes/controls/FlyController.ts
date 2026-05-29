@@ -25,12 +25,14 @@ export class FlyController {
   rollSpeed = 1.4; // rad / second
   damping = 6; // higher = snappier stop
 
-  private readonly camera: THREE.PerspectiveCamera;
+  private readonly target: THREE.Object3D;
   private readonly dom: HTMLElement;
   private readonly pressed = new Set<string>();
   private readonly velocity = new THREE.Vector3();
   private warp = false;
   private locked = false;
+  /** Recent horizontal look input, decayed each frame — drives ship banking. */
+  private yawInput = 0;
 
   // scratch
   private readonly qYaw = new THREE.Quaternion();
@@ -41,8 +43,8 @@ export class FlyController {
   private readonly fwd = new THREE.Vector3();
   private readonly move = new THREE.Vector3();
 
-  constructor(camera: THREE.PerspectiveCamera, dom: HTMLElement) {
-    this.camera = camera;
+  constructor(target: THREE.Object3D, dom: HTMLElement) {
+    this.target = target;
     this.dom = dom;
     dom.addEventListener('click', this.onClick);
     document.addEventListener('pointerlockchange', this.onLockChange);
@@ -62,15 +64,25 @@ export class FlyController {
   private onMouseMove = (e: MouseEvent): void => {
     if (!this.locked || !this.enabled) return;
     // Yaw about local up, pitch about local right — applied to camera quaternion.
-    this.camera.getWorldDirection(this.fwd);
-    this.up.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    this.right.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    this.target.getWorldDirection(this.fwd);
+    this.up.set(0, 1, 0).applyQuaternion(this.target.quaternion);
+    this.right.set(1, 0, 0).applyQuaternion(this.target.quaternion);
 
     this.qYaw.setFromAxisAngle(this.up, -e.movementX * this.lookSensitivity);
     this.qPitch.setFromAxisAngle(this.right, -e.movementY * this.lookSensitivity);
-    this.camera.quaternion.premultiply(this.qYaw).premultiply(this.qPitch);
-    this.camera.quaternion.normalize();
+    this.target.quaternion.premultiply(this.qYaw).premultiply(this.qPitch);
+    this.target.quaternion.normalize();
+    this.yawInput += e.movementX;
   };
+
+  /** Smoothed recent turn input, for visual banking of a ship. */
+  get turnRate(): number {
+    return this.yawInput;
+  }
+
+  get speedFraction(): number {
+    return this.velocity.length() / (this.baseSpeed * (this.warp ? this.warpMultiplier : 1) + 1e-3);
+  }
 
   private onKeyDown = (e: KeyboardEvent): void => {
     this.pressed.add(e.key);
@@ -103,9 +115,9 @@ export class FlyController {
     if (this.any(KEYS.rollL)) roll += 1;
     if (this.any(KEYS.rollR)) roll -= 1;
     if (roll !== 0) {
-      this.fwd.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      this.fwd.set(0, 0, -1).applyQuaternion(this.target.quaternion);
       this.qRoll.setFromAxisAngle(this.fwd, roll * this.rollSpeed * dt);
-      this.camera.quaternion.premultiply(this.qRoll).normalize();
+      this.target.quaternion.premultiply(this.qRoll).normalize();
     }
 
     // Desired move direction in local frame.
@@ -119,13 +131,16 @@ export class FlyController {
 
     const speed = this.baseSpeed * (this.warp ? this.warpMultiplier : 1);
     if (this.move.lengthSq() > 0) {
-      this.move.normalize().applyQuaternion(this.camera.quaternion).multiplyScalar(speed);
+      this.move.normalize().applyQuaternion(this.target.quaternion).multiplyScalar(speed);
     }
 
     // Critically-damped approach of velocity toward the target.
     const k = 1 - Math.exp(-this.damping * dt);
     this.velocity.lerp(this.move, k);
-    this.camera.position.addScaledVector(this.velocity, dt);
+    this.target.position.addScaledVector(this.velocity, dt);
+
+    // Decay banking input.
+    this.yawInput *= Math.exp(-dt * 7);
   }
 
   dispose(): void {

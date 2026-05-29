@@ -19,21 +19,14 @@ interface CreatureParams {
   legLen: number;
   legW: number;
   headR: number;
+  legCount: number; // 2 (biped), 4 (quadruped), or 6 (hexapod)
+  round: boolean; // blob body vs boxy body
+  neck: number; // head forward/up offset multiplier (giraffe vs lizard)
   bodyColor: RGB;
   legColor: RGB;
 }
 
-function box(
-  w: number,
-  h: number,
-  d: number,
-  x: number,
-  y: number,
-  z: number,
-  c: RGB,
-): THREE.BufferGeometry {
-  const g = new THREE.BoxGeometry(w, h, d).toNonIndexed();
-  g.translate(x, y, z);
+function colorize(g: THREE.BufferGeometry, c: RGB): THREE.BufferGeometry {
   const n = g.getAttribute('position').count;
   const col = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
@@ -45,25 +38,50 @@ function box(
   return g;
 }
 
-/** Build a creature with feet at y=0, facing +Z. */
+function box(w: number, h: number, d: number, x: number, y: number, z: number, c: RGB): THREE.BufferGeometry {
+  const g = new THREE.BoxGeometry(w, h, d).toNonIndexed();
+  g.translate(x, y, z);
+  return colorize(g, c);
+}
+
+function blob(rx: number, ry: number, rz: number, x: number, y: number, z: number, c: RGB): THREE.BufferGeometry {
+  const g = new THREE.IcosahedronGeometry(1, 1).toNonIndexed();
+  g.scale(rx, ry, rz);
+  g.translate(x, y, z);
+  return colorize(g, c);
+}
+
+/** Build a creature with feet at y=0, facing +Z. Body plan varies by params. */
 function creatureGeometry(p: CreatureParams): THREE.BufferGeometry {
   const bodyY = p.legLen + p.bodyH / 2;
   const parts: THREE.BufferGeometry[] = [];
-  // Body.
-  parts.push(box(p.bodyW, p.bodyH, p.bodyL, 0, bodyY, 0, p.bodyColor));
-  // Head (front, slightly raised).
+
+  // Body — boxy or blobby.
+  parts.push(
+    p.round
+      ? blob(p.bodyW / 2, p.bodyH / 2, p.bodyL / 2, 0, bodyY, 0, p.bodyColor)
+      : box(p.bodyW, p.bodyH, p.bodyL, 0, bodyY, 0, p.bodyColor),
+  );
+
+  // Head, set forward and up by the neck factor.
   const hr = p.headR;
-  parts.push(box(hr * 1.4, hr * 1.4, hr * 1.6, 0, bodyY + p.bodyH * 0.4, p.bodyL / 2 + hr * 0.6, p.bodyColor));
+  parts.push(
+    blob(hr * 0.8, hr * 0.8, hr * 0.95, 0, bodyY + p.bodyH * 0.4 * p.neck, p.bodyL / 2 + hr * 0.6, p.bodyColor),
+  );
   // Tail.
   parts.push(box(p.legW * 0.8, p.legW * 0.8, p.bodyL * 0.4, 0, bodyY, -p.bodyL / 2 - p.bodyL * 0.18, p.legColor));
-  // Four legs.
+
+  // Legs: distribute pairs along the body length.
+  const pairs = Math.max(1, Math.round(p.legCount / 2));
   const lx = p.bodyW / 2 - p.legW / 2;
-  const lz = p.bodyL / 2 - p.legW;
-  for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) {
-      parts.push(box(p.legW, p.legLen, p.legW, sx * lx, p.legLen / 2, sz * lz, p.legColor));
+  for (let i = 0; i < pairs; i++) {
+    const tz = pairs === 1 ? -0.2 : i / (pairs - 1); // 0..1 front→back
+    const lz = (0.5 - tz) * (p.bodyL - 2 * p.legW);
+    for (const sx of [-1, 1]) {
+      parts.push(box(p.legW, p.legLen, p.legW, sx * lx, p.legLen / 2, lz, p.legColor));
     }
   }
+
   const merged = mergeGeometries(parts, false);
   for (const g of parts) g.dispose();
   merged.computeVertexNormals();
@@ -71,22 +89,28 @@ function creatureGeometry(p: CreatureParams): THREE.BufferGeometry {
 }
 
 function speciesParams(pal: Palette, rng: RNG): CreatureParams {
-  // Earthy body color: blend foliage with a warm brown, varied per species.
+  // Body color blends an earthy base with the planet's foliage, varied per
+  // species (occasionally vivid on exotic worlds via the foliage palette).
   const base: RGB = { r: 0.45, g: 0.36, b: 0.26 };
   const t = rng();
   const bodyColor: RGB = {
-    r: clamp01(lerp(base.r, pal.foliage.r, t * 0.5) * (0.7 + rng() * 0.5)),
-    g: clamp01(lerp(base.g, pal.foliage.g, t * 0.5) * (0.7 + rng() * 0.5)),
-    b: clamp01(lerp(base.b, pal.foliage.b, t * 0.5) * (0.7 + rng() * 0.5)),
+    r: clamp01(lerp(base.r, pal.foliage.r, t * 0.6) * (0.7 + rng() * 0.6)),
+    g: clamp01(lerp(base.g, pal.foliage.g, t * 0.6) * (0.7 + rng() * 0.6)),
+    b: clamp01(lerp(base.b, pal.foliage.b, t * 0.6) * (0.7 + rng() * 0.6)),
   };
-  const scale = rangeFloat(rng, 0.7, 1.6);
+  const scale = rangeFloat(rng, 0.7, 1.7);
+  const legCount = [2, 4, 4, 6][Math.floor(rng() * 4)]!; // quadrupeds most common
+  const round = rng() < 0.4;
   return {
-    bodyW: 0.9 * scale,
-    bodyH: 0.8 * scale,
-    bodyL: 1.8 * scale,
-    legLen: rangeFloat(rng, 0.6, 1.3) * scale,
+    bodyW: (round ? 1.0 : 0.9) * scale,
+    bodyH: (legCount === 2 ? 1.0 : 0.8) * scale,
+    bodyL: (legCount === 6 ? 2.2 : 1.8) * scale,
+    legLen: rangeFloat(rng, 0.6, 1.4) * scale,
     legW: 0.22 * scale,
-    headR: 0.4 * scale,
+    headR: rangeFloat(rng, 0.35, 0.6) * scale,
+    legCount,
+    round,
+    neck: rangeFloat(rng, 0.5, 2.2),
     bodyColor,
     legColor: { r: bodyColor.r * 0.7, g: bodyColor.g * 0.7, b: bodyColor.b * 0.7 },
   };

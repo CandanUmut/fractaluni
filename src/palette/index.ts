@@ -55,15 +55,21 @@ export function biomePalette(planet: PlanetProfile, star: StarProfile): Palette 
   // never look identical, while staying within the biome's harmonious range.
   const jr = makeRNG(deriveSeed(planet.seed, 0x9a1e77e));
   const hueShift = (jr() - 0.5) * 0.07;
-  const satMul = 0.85 + jr() * 0.35;
+  const satMul = 0.95 + jr() * 0.4;
   const lightShift = (jr() - 0.5) * 0.09;
+  // ~1 in 3 worlds is "exotic": alien-colored vegetation and a shifted, more
+  // saturated terrain hue (purple grass, teal forests, magenta scrub, etc.).
+  const exotic = jr() < 0.34;
+  const exoHue = jr();
+
   const b: BiomeBase = {
     ...base,
-    hue: base.hue + hueShift,
-    sat: clamp01(base.sat * satMul),
+    hue: exotic ? base.hue + (exoHue + 0.5 - base.hue) * 0.45 : base.hue + hueShift,
+    sat: clamp01(base.sat * satMul + (exotic ? 0.18 : 0)),
     lightLow: clamp01(base.lightLow + lightShift),
     lightHigh: clamp01(base.lightHigh + lightShift),
-    foliageHue: base.foliageHue + hueShift * 0.5,
+    foliageHue: exotic ? exoHue : base.foliageHue + hueShift * 0.5,
+    foliageSat: clamp01(base.foliageSat * (exotic ? 1.4 : 1.1)),
     waterHue: base.waterHue + hueShift * 0.4,
   };
 
