@@ -70,6 +70,36 @@ export async function saveDiff(key: string, diff: PlanetDiff): Promise<void> {
   }
 }
 
+const PROGRESS_KEY = '__progression__';
+
+/** Load global player progression (currency, equipment tiers). */
+export async function loadProgress<T>(): Promise<T | null> {
+  try {
+    const db = await openDb();
+    return await new Promise((resolve, reject) => {
+      const req = db.transaction(STORE, 'readonly').objectStore(STORE).get(PROGRESS_KEY);
+      req.onsuccess = () => resolve((req.result as T | undefined) ?? null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function saveProgress<T>(obj: T): Promise<void> {
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      tx.objectStore(STORE).put(obj, PROGRESS_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Remove a planet's diff (restores it to pristine baseline). */
 export async function clearDiff(key: string): Promise<void> {
   try {

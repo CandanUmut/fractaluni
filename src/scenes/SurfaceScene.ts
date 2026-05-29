@@ -17,7 +17,10 @@ import { AnimalHerds } from '../agents/animals.ts';
 import { SkyDome } from '../render/sky.ts';
 import { Water } from '../render/water.ts';
 import { Viewmodel } from '../render/viewmodel.ts';
+import { Spaceship } from '../render/spaceship.ts';
 import { Effects } from '../render/effects.ts';
+import { ShipTerminal } from '../ui/shipTerminal.ts';
+import { progression, energyMaxFor, cargoCapFor, scanRangeFor, gunDamageFor, drillTierFor, saveProgression } from '../sim/progression.ts';
 import { makeWeapons, type HeldItem, type WeaponCtx, type RayHit } from '../weapons/items.ts';
 import { audio } from '../audio/audio.ts';
 import { SurfaceController } from './controls/SurfaceController.ts';
@@ -68,10 +71,15 @@ export class SurfaceScene implements AppScene {
   private readonly compass: Compass;
   private readonly inventory = new Map<string, number>();
   private cargoUsed = 0;
-  private cargoCap = 120;
-  private drillTier = 1;
-  private readonly scanRange = 280;
+  private cargoCap = cargoCapFor();
+  private drillTier = drillTierFor();
+  private scanRange = scanRangeFor();
   private readonly drillReach = 9;
+
+  // v3 Phase F: landed ship hub (trade + upgrade + recharge).
+  private readonly ship = new Spaceship();
+  private readonly terminal: ShipTerminal;
+  private nearShip = false;
   private lastMsg = '';
   private pickupT = 0;
 
@@ -174,6 +182,14 @@ export class SurfaceScene implements AppScene {
     this.scene.add(this.nodes.group);
     const hudRoot = document.getElementById('hud') ?? document.body;
     this.compass = new Compass(hudRoot);
+
+    // Landed ship hub at the descent point (abs origin 0,0).
+    this.scene.add(this.ship.group);
+    this.terminal = new ShipTerminal(hudRoot);
+    this.terminal.onSell = () => this.sellCargo();
+    this.terminal.onChange = () => this.applyProgression();
+    this.energyMax = energyMaxFor();
+    this.energy = this.energyMax;
     // Guardians defend valuable deposits.
     this.guardians = new GuardianManager(this.planet.seed, this.sampler, this.diff, this.nodes.resourcePalette, pal);
     this.scene.add(this.guardians.group);
@@ -234,7 +250,7 @@ export class SurfaceScene implements AppScene {
     if (kind === 'bomb') {
       this.guardians.damageNear(hit.point.x, hit.point.z, this.originCX, this.originCZ, 10, 38, this.effects);
     } else if (guardian) {
-      this.guardians.damage(guardian, kind === 'gun' ? 12 : 34 * dt, this.effects);
+      this.guardians.damage(guardian, kind === 'gun' ? gunDamageFor() : 34 * dt, this.effects);
       return;
     }
 
@@ -329,12 +345,44 @@ export class SurfaceScene implements AppScene {
       const n = this.nodes.nearby(this.originCX, this.originCZ, this.camera.position.x, this.camera.position.z, this.scanRange).length;
       this.lastMsg = `scan: ${n} deposit${n === 1 ? '' : 's'} within scanner range`;
       audio.play('pickup', 0.5);
+    } else if (e.key === 'b' || e.key === 'B') {
+      if (this.terminal.visible || this.nearShip) {
+        this.terminal.toggle();
+        this.controller.enabled = !this.terminal.visible; // freeze movement in the menu
+      } else {
+        this.lastMsg = 'return to your ship to trade & upgrade';
+      }
     }
   };
 
   private readonly onPageHide = (): void => {
     saveDiff(this.diffKey, this.diff);
+    saveProgression();
   };
+
+  private cargoValue(): number {
+    let v = 0;
+    for (const [id, amt] of this.inventory) v += amt * (RESOURCES[id]?.value ?? 0);
+    return v;
+  }
+
+  private sellCargo(): number {
+    const v = this.cargoValue();
+    progression.currency += Math.round(v);
+    this.inventory.clear();
+    this.cargoUsed = 0;
+    saveProgression();
+    this.lastMsg = `sold cargo for ${Math.round(v)}¢`;
+    return v;
+  }
+
+  /** Re-apply derived stats after an upgrade purchase. */
+  private applyProgression(): void {
+    this.energyMax = energyMaxFor();
+    this.cargoCap = cargoCapFor();
+    this.scanRange = scanRangeFor();
+    this.drillTier = drillTierFor();
+  }
 
   update(dt: number): void {
     // Hit-stop slows gameplay briefly on solid hits (effects time itself on real dt).
@@ -383,6 +431,20 @@ export class SurfaceScene implements AppScene {
     if (this.regenDelay <= 0) this.energy += (4 + this.solarRegen) * sdt;
     this.energy = clamp(this.energy, 0, this.energyMax);
     if (this.hitFlash > 0) this.hitFlash -= dt;
+
+    // Ship hub: it sits at the descent point (abs 0,0). Near it you recharge fast
+    // and can open the trade/upgrade terminal — so cargo has to be hauled back.
+    const shipLX = -this.originCX * CHUNK_SIZE;
+    const shipLZ = -this.originCZ * CHUNK_SIZE;
+    this.ship.group.position.set(shipLX, this.sampler.heightAt(0, 0) + 1.4, shipLZ);
+    this.ship.setControls(0, 0.12);
+    this.ship.update(sdt);
+    this.nearShip = Math.hypot(this.camera.position.x - shipLX, this.camera.position.z - shipLZ) < 16;
+    if (this.nearShip) {
+      this.energy = Math.min(this.energyMax, this.energy + 70 * dt);
+      this.regenDelay = 0;
+    }
+    if (this.terminal.visible) this.terminal.setSellValue(this.cargoValue());
 
     // Weapons (aim from the clean camera orientation before shake).
     this.current.update(sdt, this.buildCtx());
@@ -441,9 +503,12 @@ export class SurfaceScene implements AppScene {
     audio.stopLoop();
     for (const w of this.weapons) w.dispose();
     this.effects.dispose();
+    saveProgression();
     this.nodes.dispose();
     this.guardians.dispose();
     this.compass.dispose();
+    this.ship.dispose();
+    this.terminal.dispose();
     this.controller.dispose();
     this.chunks.dispose();
     this.flora.dispose();
@@ -468,7 +533,8 @@ export class SurfaceScene implements AppScene {
     const ebars = Math.round((this.energy / this.energyMax) * 10);
     const eState = this.energy <= 1 ? '  DEPLETED — retreat / recharge' : this.hitFlash > 0 ? '  ⚠' : '';
     lines.push(`energy ${'█'.repeat(ebars)}${'░'.repeat(10 - ebars)} ${this.energy.toFixed(0)}${eState}`);
-    lines.push(`cargo ${this.cargoUsed.toFixed(0)}/${this.cargoCap}${this.inventoryText()}`);
+    lines.push(`cargo ${this.cargoUsed.toFixed(0)}/${this.cargoCap}  ·  ${progression.currency}¢  ·  drill T${this.drillTier}${this.inventoryText()}`);
+    lines.push(this.nearShip ? '◈ at ship — recharging · [B] trade & upgrade' : '[B] ship terminal (return to ship)');
     if (this.lastMsg) lines.push(`» ${this.lastMsg}`);
     lines.push('[T] take off to system');
     return lines;

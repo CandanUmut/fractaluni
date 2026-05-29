@@ -8,6 +8,10 @@ import { Transition } from './ui/transition.ts';
 import { readState, writeState, type Location, type UniverseState } from './ui/urlState.ts';
 import { hashString } from './core/hash.ts';
 import { profileToLines } from './universe/debug.ts';
+import { loadProgression } from './sim/progression.ts';
+
+// Load global player progression (currency, equipment tiers) up front.
+void loadProgression();
 
 const appEl = document.getElementById('app')!;
 const hudEl = document.getElementById('hud')!;
