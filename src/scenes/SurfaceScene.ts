@@ -104,6 +104,10 @@ export class SurfaceScene implements AppScene {
   private originCX = 0;
   private originCZ = 0;
 
+  // Sun (casts shadows; follows the player).
+  private readonly sun: THREE.DirectionalLight;
+  private readonly sunDir = new THREE.Vector3();
+
   constructor(
     universeSeed: number,
     cell: readonly [number, number, number],
@@ -135,9 +139,25 @@ export class SurfaceScene implements AppScene {
     const az = rng() * TAU;
     const el = lerp(20, 60, rng()) * DEG2RAD;
     const sunDir = new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+    this.sunDir.copy(sunDir);
     const sun = new THREE.DirectionalLight(rgbToHex(pal.sun), 2.4);
-    sun.position.copy(sunDir).multiplyScalar(1000);
+    sun.position.copy(sunDir).multiplyScalar(200);
+    // Shadows: a tight ortho frustum that follows the player.
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 600;
+    const sc = sun.shadow.camera as THREE.OrthographicCamera;
+    sc.left = -140;
+    sc.right = 140;
+    sc.top = 140;
+    sc.bottom = -140;
+    sc.updateProjectionMatrix();
+    sun.shadow.bias = -0.0006;
+    sun.shadow.normalBias = 0.6;
+    this.sun = sun;
     this.scene.add(sun);
+    this.scene.add(sun.target);
     this.scene.add(new THREE.AmbientLight(rgbToHex(pal.skyZenith), 0.7));
 
     this.sky = new SkyDome(pal.skyHorizon, pal.skyZenith, pal.sun, sunDir);
@@ -194,6 +214,9 @@ export class SurfaceScene implements AppScene {
 
     // Landed ship hub at the descent point (abs origin 0,0).
     this.scene.add(this.ship.group);
+    this.ship.group.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) o.castShadow = true;
+    });
     this.terminal = new ShipTerminal(hudRoot);
     this.reticle = new Reticle(hudRoot);
     this.markers = new Markers(hudRoot);
@@ -439,6 +462,9 @@ export class SurfaceScene implements AppScene {
     this.birds?.update(sdt, this.camera.position);
     this.herds.update(sdt, this.camera.position);
     this.sky.follow(this.camera.position);
+    // Keep the shadow-casting sun centered on the player.
+    this.sun.target.position.copy(this.camera.position);
+    this.sun.position.copy(this.camera.position).addScaledVector(this.sunDir, 200);
     if (this.water) this.water.update(sdt, this.camera.position, this.sampler.seaLevel);
 
     // Deposits + guardians stream around the player.

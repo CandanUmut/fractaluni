@@ -43,6 +43,7 @@ export interface HeldItem {
 }
 
 const HIT = new THREE.Color(0xcfe6ff);
+const MUZZLE = new THREE.Color(0xfff0c0);
 const SCORCH = new THREE.Color(0x140f0a);
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -123,6 +124,13 @@ export class Gun implements HeldItem {
     ctx.kick(0.05, 0.02, -0.06);
     ctx.effects.addShake(0.05);
     audio.play('gunshot');
+
+    // Muzzle flash light + tracer streak.
+    const muzzle = ctx.pos.clone().addScaledVector(ctx.dir, 0.8);
+    ctx.effects.flashLight(muzzle, MUZZLE, 5, 0.05);
+    const end = hit ? hit.point : ctx.pos.clone().addScaledVector(ctx.dir, this.range);
+    ctx.effects.tracer(muzzle, end, MUZZLE);
+
     if (hit) {
       ctx.effects.burst(hit.point, HIT, 10, 6, 0.35, -6, 5);
       ctx.effects.decal(hit.point, hit.normal, 0.7, SCORCH, 22);

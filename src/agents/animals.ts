@@ -223,6 +223,7 @@ export class AnimalHerds {
       const geo = creatureGeometry(speciesParams(pal, rng));
       const mesh = new THREE.InstancedMesh(geo, this.material, perSpecies);
       mesh.count = perSpecies;
+      mesh.castShadow = true;
       mesh.frustumCulled = false;
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       this.meshes.push(mesh);

@@ -133,6 +133,8 @@ export class NodeManager {
       emissiveIntensity: exotic ? 0.5 : spec.type.tier === 'rare' ? 0.2 : 0.05,
     });
     const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     mesh.scale.setScalar(rangeFloat(rng, 1, 1.8));
     const node: DepositNode = { key: spec.key, ax: spec.ax, az: spec.az, type: spec.type, richness: spec.richness, maxRichness: spec.richness, mesh };
     mesh.userData.node = node;

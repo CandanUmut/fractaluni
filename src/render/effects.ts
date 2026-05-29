@@ -30,6 +30,12 @@ export class Effects {
 
   private readonly shockwaves: { mesh: THREE.Mesh; t: number; dur: number; max: number }[] = [];
 
+  // Brief dynamic flash lights (muzzle, explosions) and tracer streaks.
+  private readonly lights: { light: THREE.PointLight; t: number; life: number; base: number }[] = [];
+  private readonly tracers: { line: THREE.Line; t: number; life: number }[] = [];
+  private readonly MAX_LIGHTS = 6;
+  private readonly MAX_TRACERS = 16;
+
   // Decal pool (scorch/impact marks left on terrain).
   private readonly decalGeo = new THREE.PlaneGeometry(1, 1);
   private readonly decals: { mesh: THREE.Mesh; t: number; dur: number }[] = [];
@@ -140,8 +146,54 @@ export class Effects {
     this.shockwave(pos, radius, color);
     this.burst(pos, color, 90, radius * 3.5, 0.9, -12, 9);
     this.burst(pos, new THREE.Color(0xffd089), 40, radius * 2, 0.5, -4, 12);
+    this.burst(pos, new THREE.Color(0x2a2a2a), 24, radius * 1.4, 1.5, -1.5, 16); // smoke
+    this.flashLight(pos, new THREE.Color(0xff9a4a), radius * 1.2, 0.18);
     this.addShake(radius * 0.06);
     this.hitStop(0.06);
+  }
+
+  /** A brief point-light flash (muzzle, explosion). */
+  flashLight(pos: THREE.Vector3, color: THREE.Color, intensity: number, life: number): void {
+    let e = this.lights.find((x) => x.t >= x.life);
+    if (!e && this.lights.length < this.MAX_LIGHTS) {
+      const light = new THREE.PointLight(0xffffff, 0, 60, 2);
+      light.castShadow = false;
+      this.group.add(light);
+      e = { light, t: 0, life, base: intensity };
+      this.lights.push(e);
+    }
+    if (!e) return;
+    e.t = 0;
+    e.life = life;
+    e.base = intensity;
+    e.light.color.copy(color);
+    e.light.intensity = intensity;
+    e.light.position.copy(pos);
+  }
+
+  /** A fast-fading tracer streak from→to. */
+  tracer(from: THREE.Vector3, to: THREE.Vector3, color: THREE.Color): void {
+    let e = this.tracers.find((x) => x.t >= x.life);
+    if (!e && this.tracers.length < this.MAX_TRACERS) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+      const mat = new THREE.LineBasicMaterial({ transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+      const line = new THREE.Line(geo, mat);
+      line.frustumCulled = false;
+      this.group.add(line);
+      e = { line, t: 0, life: 0.06 };
+      this.tracers.push(e);
+    }
+    if (!e) return;
+    e.t = 0;
+    e.life = 0.06;
+    const arr = e.line.geometry.getAttribute('position') as THREE.BufferAttribute;
+    arr.setXYZ(0, from.x, from.y, from.z);
+    arr.setXYZ(1, to.x, to.y, to.z);
+    arr.needsUpdate = true;
+    (e.line.material as THREE.LineBasicMaterial).color.copy(color);
+    (e.line.material as THREE.LineBasicMaterial).opacity = 1;
+    e.line.visible = true;
   }
 
   /** Leave a fading scorch/impact mark on a surface. */
@@ -228,6 +280,25 @@ export class Effects {
       (s.mesh.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.8;
     }
 
+    // Flash lights decay.
+    for (const e of this.lights) {
+      if (e.t >= e.life) {
+        e.light.intensity = 0;
+        continue;
+      }
+      e.t += dt;
+      e.light.intensity = e.base * Math.max(0, 1 - e.t / e.life);
+    }
+    // Tracers fade fast.
+    for (const e of this.tracers) {
+      if (e.t >= e.life) {
+        e.line.visible = false;
+        continue;
+      }
+      e.t += dt;
+      (e.line.material as THREE.LineBasicMaterial).opacity = 1 - e.t / e.life;
+    }
+
     // Decals fade out.
     for (const d of this.decals) {
       if (!d.mesh.visible) continue;
@@ -250,5 +321,9 @@ export class Effects {
     }
     for (const d of this.decals) (d.mesh.material as THREE.Material).dispose();
     this.decalGeo.dispose();
+    for (const e of this.tracers) {
+      e.line.geometry.dispose();
+      (e.line.material as THREE.Material).dispose();
+    }
   }
 }

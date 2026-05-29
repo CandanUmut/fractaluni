@@ -25,6 +25,9 @@ export class SceneManager {
     this.pixelRatio = Math.min(window.devicePixelRatio, 2);
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setClearColor(0x05060a, 1);
+    // Real-time shadows (used by the surface scene's sun).
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     // Composer is retargeted whenever the active scene changes.
     const bootScene = new THREE.Scene();

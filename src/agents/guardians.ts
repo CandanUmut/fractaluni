@@ -97,6 +97,7 @@ export class GuardianManager {
     const geo = creatureGeometry(params);
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.7 });
     const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
     mesh.scale.setScalar(type.tier === 'exotic' ? 2.4 : 1.9);
     const ang = (i / 2) * Math.PI * 2 + rng() * 2;
     const ax = nodeX + Math.cos(ang) * 5;

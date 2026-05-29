@@ -254,6 +254,8 @@ export class ChunkManager {
     let mesh = (geo.userData.mesh as THREE.Mesh | undefined) ?? undefined;
     if (!mesh) {
       mesh = new THREE.Mesh(geo, this.material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       geo.userData.mesh = mesh;
     }
     mesh.position.set((cx - this.originCX) * CHUNK_SIZE, 0, (cz - this.originCZ) * CHUNK_SIZE);

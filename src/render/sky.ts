@@ -34,12 +34,16 @@ export class SkyDome {
         uniform vec3 uSun;
         uniform vec3 uSunDir;
         void main() {
-          float h = clamp(vDir.y * 0.5 + 0.5, 0.0, 1.0);
-          vec3 col = mix(uHorizon, uZenith, pow(h, 0.8));
-          // Sun disc + halo.
-          float d = max(dot(normalize(vDir), normalize(uSunDir)), 0.0);
-          col += uSun * pow(d, 220.0) * 3.0;      // disc
-          col += uSun * pow(d, 8.0) * 0.25;        // halo
+          vec3 dir = normalize(vDir);
+          float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+          vec3 col = mix(uHorizon, uZenith, pow(h, 0.7));
+          // Atmospheric haze brightening toward the horizon line.
+          col = mix(col, uHorizon * 1.15, smoothstep(0.5, 0.0, h) * 0.5);
+          // Sun: tight bright disc + broad halo + low-horizon scatter tint.
+          float d = max(dot(dir, normalize(uSunDir)), 0.0);
+          col += uSun * pow(d, 350.0) * 4.0;
+          col += uSun * pow(d, 6.0) * 0.4;
+          col += uSun * pow(d, 2.0) * 0.08 * smoothstep(0.6, 0.0, abs(dir.y));
           gl_FragColor = vec4(col, 1.0);
         }
       `,
