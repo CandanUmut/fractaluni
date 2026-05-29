@@ -11,6 +11,9 @@ import { AnimalHerds } from '../agents/animals.ts';
 import { SkyDome } from '../render/sky.ts';
 import { Water } from '../render/water.ts';
 import { Viewmodel } from '../render/viewmodel.ts';
+import { Effects } from '../render/effects.ts';
+import { makeWeapons, type HeldItem, type WeaponCtx, type RayHit } from '../weapons/items.ts';
+import { sfx } from '../audio/sfx.ts';
 import { SurfaceController } from './controls/SurfaceController.ts';
 import { rgbToHex } from '../core/color.ts';
 import { clamp, lerp, DEG2RAD, TAU } from '../core/math.ts';
@@ -42,6 +45,16 @@ export class SurfaceScene implements AppScene {
   private readonly viewmodel = new Viewmodel();
   private readonly sampler: ReturnType<typeof makeTerrain>;
 
+  // v3 weapons + effects.
+  private readonly dom: HTMLElement;
+  private readonly effects = new Effects();
+  private readonly weaponWorld = new THREE.Group();
+  private readonly weapons: HeldItem[];
+  private weaponIndex = 0;
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly aimDir = new THREE.Vector3();
+  private readonly shake2 = new THREE.Vector2();
+
   // Floating origin on XZ (Y stays near the ground).
   private originCX = 0;
   private originCZ = 0;
@@ -53,6 +66,7 @@ export class SurfaceScene implements AppScene {
     planetIndex: number,
     dom: HTMLElement,
   ) {
+    this.dom = dom;
     this.star = deriveStarAt(universeSeed, cell, starIndex);
     this.planet = derivePlanet(this.star, planetIndex);
     const pal = biomePalette(this.planet, this.star);
@@ -117,22 +131,91 @@ export class SurfaceScene implements AppScene {
     this.herds = new AnimalHerds(this.planet, this.planet.seed, pal, this.sampler, heightAtLocal);
     this.scene.add(this.herds.group);
 
+    // Effects + weapons.
+    this.scene.add(this.effects.group);
+    this.scene.add(this.weaponWorld);
+    this.weapons = makeWeapons(this.weaponWorld);
+    this.viewmodel.setItem(this.weapons[0]!.object);
+    this.weapons[0]!.equip();
+
     // Prime the full view radius so the surface is present on the first frame.
     let guard = 0;
     while (!this.chunks.fullyLoaded && guard++ < 500) this.chunks.update(0, 0, 0, 0);
 
     window.addEventListener('keydown', this.onKeyDown);
+    dom.addEventListener('pointerdown', this.onPointerDown);
+    window.addEventListener('pointerup', this.onPointerUp);
+    dom.addEventListener('wheel', this.onWheel, { passive: true });
   }
+
+  private get current(): HeldItem {
+    return this.weapons[this.weaponIndex]!;
+  }
+
+  private readonly raycast = (origin: THREE.Vector3, dir: THREE.Vector3, far: number): RayHit | null => {
+    this.raycaster.set(origin, dir);
+    this.raycaster.far = far;
+    this.raycaster.near = 0;
+    const hits = this.raycaster.intersectObjects(this.chunks.group.children, false);
+    if (hits.length === 0) return null;
+    const h = hits[0]!;
+    const normal = new THREE.Vector3(0, 1, 0);
+    if (h.face) normal.copy(h.face.normal).transformDirection(h.object.matrixWorld);
+    return { point: h.point.clone(), normal, distance: h.distance, object: h.object };
+  };
+
+  private buildCtx(): WeaponCtx {
+    this.camera.getWorldDirection(this.aimDir);
+    return {
+      pos: this.camera.position,
+      dir: this.aimDir,
+      raycast: this.raycast,
+      effects: this.effects,
+      kick: (b, u, r) => this.viewmodel.addKick(b, u, r),
+    };
+  }
+
+  private switchWeapon(i: number): void {
+    if (i === this.weaponIndex || i < 0 || i >= this.weapons.length) return;
+    this.current.holster();
+    this.weaponIndex = i;
+    this.viewmodel.setItem(this.current.object);
+    this.current.equip();
+    this.viewmodel.addKick(0.12, -0.08, 0.25); // equip dip
+    sfx.blip(520);
+  }
+
+  private onPointerDown = (e: PointerEvent): void => {
+    if (document.pointerLockElement !== this.dom || e.button !== 0) return;
+    this.current.primaryDown(this.buildCtx());
+  };
+  private onPointerUp = (e: PointerEvent): void => {
+    if (e.button === 0) this.current.primaryUp(this.buildCtx());
+  };
+  private onWheel = (e: WheelEvent): void => {
+    if (document.pointerLockElement !== this.dom) return;
+    const n = this.weapons.length;
+    this.switchWeapon((this.weaponIndex + (e.deltaY > 0 ? 1 : n - 1)) % n);
+  };
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if ((e.key === 'Backspace' || e.key === 't' || e.key === 'T') && this.onTakeOff) {
       e.preventDefault();
       this.onTakeOff();
+    } else if (e.key === '1') {
+      this.switchWeapon(0);
+    } else if (e.key === '2') {
+      this.switchWeapon(1);
+    } else if (e.key === '3') {
+      this.switchWeapon(2);
     }
   };
 
   update(dt: number): void {
-    this.controller.update(dt);
+    // Hit-stop slows gameplay briefly on solid hits (effects time itself on real dt).
+    const sdt = dt * this.effects.timeFactor;
+
+    this.controller.update(sdt);
 
     // Floating-origin recenter on XZ (whole chunks).
     const sx = Math.round(this.camera.position.x / CHUNK_SIZE);
@@ -148,19 +231,30 @@ export class SurfaceScene implements AppScene {
 
     this.chunks.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
     this.flora.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
-    this.birds?.update(dt, this.camera.position);
-    this.herds.update(dt, this.camera.position);
+    this.birds?.update(sdt, this.camera.position);
+    this.herds.update(sdt, this.camera.position);
     this.sky.follow(this.camera.position);
-    if (this.water) this.water.update(dt, this.camera.position, this.sampler.seaLevel);
+    if (this.water) this.water.update(sdt, this.camera.position, this.sampler.seaLevel);
+
+    // Weapons (aim from the clean camera orientation before shake).
+    this.current.update(sdt, this.buildCtx());
+    this.effects.update(dt); // real dt so hit-stop can elapse
 
     // First-person viewmodel sway/bob.
     const sway = this.controller.sway;
-    this.viewmodel.update(dt, {
+    this.viewmodel.update(sdt, {
       moving: this.controller.isMoving,
       swayX: sway.x,
       swayY: sway.y,
       speed01: this.controller.speed01,
     });
+
+    // Screen shake (rotation jitter; overwritten next frame by the controller).
+    const sh = this.effects.getShake(this.shake2);
+    if (sh.x !== 0 || sh.y !== 0) {
+      this.camera.rotateX(sh.x);
+      this.camera.rotateY(sh.y);
+    }
   }
 
   resize(width: number, height: number): void {
@@ -177,6 +271,12 @@ export class SurfaceScene implements AppScene {
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown);
+    this.dom.removeEventListener('pointerdown', this.onPointerDown);
+    window.removeEventListener('pointerup', this.onPointerUp);
+    this.dom.removeEventListener('wheel', this.onWheel);
+    sfx.stopDrill();
+    for (const w of this.weapons) w.dispose();
+    this.effects.dispose();
     this.controller.dispose();
     this.chunks.dispose();
     this.flora.dispose();
@@ -195,8 +295,9 @@ export class SurfaceScene implements AppScene {
       `star ${s.spectralClass} ${s.temperature.toFixed(0)}K · orbit ${p.orbitalRadius.toFixed(2)} AU · gravity ${p.gravity.toFixed(2)}g`,
     ];
     if (!this.controller.isLocked) {
-      lines.push('click to capture mouse · WASD move · mouse look · Shift sprint · Space jump/jetpack');
+      lines.push('click to capture mouse · WASD move · Shift sprint · Space jump/jetpack');
     }
+    lines.push(`weapon: ${this.current.name}  ·  [1] gun  [2] bomb  [3] drill  (wheel to cycle) · LMB use`);
     lines.push('[T] take off to system');
     return lines;
   }

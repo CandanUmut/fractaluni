@@ -87,12 +87,10 @@ function currentProfileLines(): string[] {
   return profileToLines(state.seed, cell, star, planet);
 }
 
-// Demonstrate SceneManager swapping + URL state via number keys (placeholder nav).
+// Debug: toggle the derived-profile panel. (Scene navigation is via in-world
+// flight + Enter/Backspace/take-off; number keys belong to weapon selection.)
 window.addEventListener('keydown', (e) => {
-  if (e.key === '1') goTo({ kind: 'galaxy' });
-  else if (e.key === '2') goTo({ kind: 'system', cell: [0, 0, 0], star: 0 });
-  else if (e.key === '3') goTo({ kind: 'surface', cell: [0, 0, 0], star: 0, planet: 0 });
-  else if (e.key === 'p' || e.key === 'P') {
+  if (e.key === 'p' || e.key === 'P') {
     profileVisible = !profileVisible;
     const lines = profileVisible ? currentProfileLines() : null;
     hud.setProfile(lines);
