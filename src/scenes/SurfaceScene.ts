@@ -13,7 +13,7 @@ import { Water } from '../render/water.ts';
 import { Viewmodel } from '../render/viewmodel.ts';
 import { Effects } from '../render/effects.ts';
 import { makeWeapons, type HeldItem, type WeaponCtx, type RayHit } from '../weapons/items.ts';
-import { sfx } from '../audio/sfx.ts';
+import { audio } from '../audio/audio.ts';
 import { SurfaceController } from './controls/SurfaceController.ts';
 import { rgbToHex } from '../core/color.ts';
 import { clamp, lerp, DEG2RAD, TAU } from '../core/math.ts';
@@ -182,10 +182,11 @@ export class SurfaceScene implements AppScene {
     this.viewmodel.setItem(this.current.object);
     this.current.equip();
     this.viewmodel.addKick(0.12, -0.08, 0.25); // equip dip
-    sfx.blip(520);
+    audio.play('equip');
   }
 
   private onPointerDown = (e: PointerEvent): void => {
+    audio.init(); // unlock + load audio on first user gesture
     if (document.pointerLockElement !== this.dom || e.button !== 0) return;
     this.current.primaryDown(this.buildCtx());
   };
@@ -274,7 +275,7 @@ export class SurfaceScene implements AppScene {
     this.dom.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointerup', this.onPointerUp);
     this.dom.removeEventListener('wheel', this.onWheel);
-    sfx.stopDrill();
+    audio.stopLoop();
     for (const w of this.weapons) w.dispose();
     this.effects.dispose();
     this.controller.dispose();

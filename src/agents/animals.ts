@@ -51,6 +51,16 @@ function blob(rx: number, ry: number, rz: number, x: number, y: number, z: numbe
   return colorize(g, c);
 }
 
+// Low-detail ball for small features (eyes) — keeps the triangle count down.
+function ball(r: number, x: number, y: number, z: number, c: RGB): THREE.BufferGeometry {
+  const g = new THREE.IcosahedronGeometry(r, 0).toNonIndexed();
+  g.translate(x, y, z);
+  return colorize(g, c);
+}
+
+const EYE_WHITE: RGB = { r: 0.93, g: 0.94, b: 0.96 };
+const PUPIL: RGB = { r: 0.04, g: 0.04, b: 0.06 };
+
 /** Build a creature with feet at y=0, facing +Z. Body plan varies by params. */
 export function creatureGeometry(p: CreatureParams): THREE.BufferGeometry {
   const bodyY = p.legLen + p.bodyH / 2;
@@ -65,9 +75,20 @@ export function creatureGeometry(p: CreatureParams): THREE.BufferGeometry {
 
   // Head, set forward and up by the neck factor.
   const hr = p.headR;
-  parts.push(
-    blob(hr * 0.8, hr * 0.8, hr * 0.95, 0, bodyY + p.bodyH * 0.4 * p.neck, p.bodyL / 2 + hr * 0.6, p.bodyColor),
-  );
+  const headY = bodyY + p.bodyH * 0.4 * p.neck;
+  const headZ = p.bodyL / 2 + hr * 0.6;
+  parts.push(blob(hr * 0.8, hr * 0.8, hr * 0.95, 0, headY, headZ, p.bodyColor));
+
+  // Face: two eyes (white + pupil) and a small snout, so it reads as a creature.
+  const ex = hr * 0.42;
+  const ez = headZ + hr * 0.5;
+  const ey = headY + hr * 0.18;
+  for (const sx of [-1, 1]) {
+    parts.push(ball(hr * 0.26, sx * ex, ey, ez, EYE_WHITE));
+    parts.push(ball(hr * 0.14, sx * ex, ey, ez + hr * 0.16, PUPIL));
+  }
+  parts.push(box(hr * 0.5, hr * 0.42, hr * 0.55, 0, headY - hr * 0.22, headZ + hr * 0.35, p.legColor));
+
   // Tail.
   parts.push(box(p.legW * 0.8, p.legW * 0.8, p.bodyL * 0.4, 0, bodyY, -p.bodyL / 2 - p.bodyL * 0.18, p.legColor));
 

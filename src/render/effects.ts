@@ -30,6 +30,13 @@ export class Effects {
 
   private readonly shockwaves: { mesh: THREE.Mesh; t: number; dur: number; max: number }[] = [];
 
+  // Decal pool (scorch/impact marks left on terrain).
+  private readonly decalGeo = new THREE.PlaneGeometry(1, 1);
+  private readonly decals: { mesh: THREE.Mesh; t: number; dur: number }[] = [];
+  private decalNext = 0;
+  private readonly MAX_DECALS = 64;
+  private readonly _zAxis = new THREE.Vector3(0, 0, 1);
+
   // screen shake + hit-stop
   private shakeAmp = 0;
   private hitStopT = 0;
@@ -137,6 +144,29 @@ export class Effects {
     this.hitStop(0.06);
   }
 
+  /** Leave a fading scorch/impact mark on a surface. */
+  decal(point: THREE.Vector3, normal: THREE.Vector3, size: number, color: THREE.Color, dur = 30): void {
+    let entry: { mesh: THREE.Mesh; t: number; dur: number };
+    if (this.decals.length < this.MAX_DECALS) {
+      const mat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, opacity: 0.7 });
+      const mesh = new THREE.Mesh(this.decalGeo, mat);
+      this.group.add(mesh);
+      entry = { mesh, t: 0, dur };
+      this.decals.push(entry);
+    } else {
+      entry = this.decals[this.decalNext]!;
+      this.decalNext = (this.decalNext + 1) % this.MAX_DECALS;
+    }
+    entry.t = 0;
+    entry.dur = dur;
+    entry.mesh.visible = true;
+    entry.mesh.position.copy(point).addScaledVector(normal, 0.06);
+    entry.mesh.quaternion.setFromUnitVectors(this._zAxis, normal);
+    entry.mesh.scale.setScalar(size);
+    (entry.mesh.material as THREE.MeshBasicMaterial).color.copy(color);
+    (entry.mesh.material as THREE.MeshBasicMaterial).opacity = 0.7;
+  }
+
   addShake(amt: number): void {
     this.shakeAmp = Math.min(0.5, this.shakeAmp + amt);
   }
@@ -197,6 +227,18 @@ export class Effects {
       s.mesh.scale.setScalar(r);
       (s.mesh.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.8;
     }
+
+    // Decals fade out.
+    for (const d of this.decals) {
+      if (!d.mesh.visible) continue;
+      d.t += dt;
+      const k = d.t / d.dur;
+      if (k >= 1) {
+        d.mesh.visible = false;
+      } else {
+        (d.mesh.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.7;
+      }
+    }
   }
 
   dispose(): void {
@@ -206,5 +248,7 @@ export class Effects {
       s.mesh.geometry.dispose();
       (s.mesh.material as THREE.Material).dispose();
     }
+    for (const d of this.decals) (d.mesh.material as THREE.Material).dispose();
+    this.decalGeo.dispose();
   }
 }

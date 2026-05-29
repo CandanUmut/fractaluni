@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Effects } from '../render/effects.ts';
-import { sfx } from '../audio/sfx.ts';
+import { audio } from '../audio/audio.ts';
 
 // Equippable items: gun (hitscan), bomb (thrown arc + explosion), drill (beam).
 // Viewmodels are built procedurally; per-state animation (recoil, spin, throw)
@@ -41,6 +41,8 @@ export interface HeldItem {
 }
 
 const HIT = new THREE.Color(0xcfe6ff);
+const SCORCH = new THREE.Color(0x140f0a);
+const UP = new THREE.Vector3(0, 1, 0);
 
 // ---- Gun -------------------------------------------------------------------
 
@@ -57,22 +59,38 @@ export class Gun implements HeldItem {
   private readonly muzzle = new THREE.Vector3(0, 0.03, -0.5);
 
   constructor() {
-    const steel = new THREE.MeshStandardMaterial({ color: 0x3b4250, flatShading: true, roughness: 0.5, metalness: 0.5 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x23272f, flatShading: true });
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.13, 0.46), steel);
+    const steel = new THREE.MeshStandardMaterial({ color: 0x4a5364, flatShading: true, roughness: 0.45, metalness: 0.6 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x20242c, flatShading: true, roughness: 0.6 });
+    const accent = new THREE.MeshStandardMaterial({ color: 0x2aa6ff, emissive: 0x1366cc, emissiveIntensity: 0.7, flatShading: true });
+
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.44), steel);
     body.position.set(0, 0, 0.05);
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.5, 10), steel);
+    const topRail = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.04, 0.34), dark);
+    topRail.position.set(0, 0.08, 0.0);
+    const sight = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.05, 0.03), dark);
+    sight.position.set(0, 0.12, -0.12);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.52, 12), steel);
     barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 0.03, -0.26);
-    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.16, 0.1), dark);
-    grip.position.set(0, -0.14, 0.16);
-    grip.rotation.x = 0.3;
+    barrel.position.set(0, 0.02, -0.28);
+    const muzzleRing = new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.012, 8, 14), accent);
+    muzzleRing.position.set(0, 0.02, -0.5);
+    const mag = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, 0.09), dark);
+    mag.position.set(0, -0.13, 0.0);
+    mag.rotation.x = -0.15;
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, 0.09), dark);
+    grip.position.set(0, -0.13, 0.17);
+    grip.rotation.x = 0.35;
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.09, 0.16), steel);
+    stock.position.set(0, -0.02, 0.3);
+    const core = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.03, 0.2), accent);
+    core.position.set(0.055, 0.02, 0.06);
+
     this.flash = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.3, 0.3),
+      new THREE.PlaneGeometry(0.34, 0.34),
       new THREE.MeshBasicMaterial({ color: 0xfff0c0, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }),
     );
-    this.flash.position.copy(this.muzzle).add(new THREE.Vector3(0, 0, -0.05));
-    this.object.add(body, barrel, grip, this.flash);
+    this.flash.position.copy(this.muzzle).add(new THREE.Vector3(0, -0.01, -0.06));
+    this.object.add(body, topRail, sight, barrel, muzzleRing, mag, grip, stock, core, this.flash);
   }
 
   equip(): void {}
@@ -101,9 +119,10 @@ export class Gun implements HeldItem {
     (this.flash.material as THREE.MeshBasicMaterial).opacity = 1;
     ctx.kick(0.05, 0.02, -0.06);
     ctx.effects.addShake(0.05);
-    sfx.gun();
+    audio.play('gunshot');
     if (hit) {
       ctx.effects.burst(hit.point, HIT, 10, 6, 0.35, -6, 5);
+      ctx.effects.decal(hit.point, hit.normal, 0.7, SCORCH, 22);
       ctx.onHit?.(hit, 'gun', 0);
     }
   }
@@ -179,7 +198,7 @@ export class Bomb implements HeldItem {
     const vel = ctx.dir.clone().multiplyScalar(this.throwSpeed).add(new THREE.Vector3(0, 6, 0));
     this.projectiles.push({ mesh, vel, prev: start.clone(), life: 6 });
     ctx.kick(0.04, 0.06, 0.05);
-    sfx.blip(300);
+    audio.play('throw');
   }
   primaryUp(): void {}
 
@@ -200,7 +219,8 @@ export class Bomb implements HeldItem {
       if (hit || p.life <= 0) {
         const at = hit ? hit.point : p.mesh.position;
         ctx.effects.explosion(at, this.radius, new THREE.Color(0xff8a3a));
-        sfx.explosion();
+        ctx.effects.decal(at, hit ? hit.normal : UP, this.radius * 1.4, SCORCH, 70);
+        audio.play('explosion');
         if (hit) ctx.onHit?.({ ...hit, point: at }, 'bomb', 0);
         this.world.remove(p.mesh);
         p.mesh.geometry.dispose();
@@ -255,24 +275,26 @@ export class Drill implements HeldItem {
 
   constructor(world: THREE.Group) {
     this.world = world;
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(0.13, 0.15, 0.34),
-      new THREE.MeshStandardMaterial({ color: 0x5a4a2a, flatShading: true, roughness: 0.5, metalness: 0.5 }),
-    );
-    body.position.set(0, 0, 0.08);
-    this.bit = new THREE.Mesh(
-      new THREE.ConeGeometry(0.07, 0.4, 6),
-      new THREE.MeshStandardMaterial({ color: 0xc8a050, flatShading: true, metalness: 0.7, roughness: 0.3 }),
-    );
+    const shell = new THREE.MeshStandardMaterial({ color: 0xd08a2a, flatShading: true, roughness: 0.5, metalness: 0.5 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x2a2f3a, flatShading: true });
+    const metal = new THREE.MeshStandardMaterial({ color: 0xcdd2da, flatShading: true, metalness: 0.85, roughness: 0.25 });
+
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.15, 0.3), shell);
+    body.position.set(0, 0, 0.12);
+    const housing = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.18, 12), dark);
+    housing.rotation.x = Math.PI / 2;
+    housing.position.set(0, 0.0, -0.12);
+    this.bit = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.42, 6), metal);
     this.bit.rotation.x = -Math.PI / 2;
-    this.bit.position.set(0, 0.02, -0.32);
-    const grip = new THREE.Mesh(
-      new THREE.BoxGeometry(0.07, 0.16, 0.1),
-      new THREE.MeshStandardMaterial({ color: 0x2a2f3a, flatShading: true }),
-    );
-    grip.position.set(0, -0.15, 0.16);
+    this.bit.position.set(0, 0.0, -0.34);
+    const collar = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.018, 8, 14), new THREE.MeshStandardMaterial({ color: 0xffc24a, emissive: 0xff8a1a, emissiveIntensity: 0.6, flatShading: true }));
+    collar.position.set(0, 0, -0.2);
+    const handleTop = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.06, 0.16), dark);
+    handleTop.position.set(0, 0.12, 0.08);
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.16, 0.1), dark);
+    grip.position.set(0, -0.15, 0.18);
     grip.rotation.x = 0.3;
-    this.object.add(body, this.bit, grip);
+    this.object.add(body, housing, this.bit, collar, handleTop, grip);
 
     // World-space mining beam (hidden until drilling).
     this.beam = new THREE.Mesh(
@@ -289,13 +311,13 @@ export class Drill implements HeldItem {
   }
   primaryDown(): void {
     this.drilling = true;
-    sfx.startDrill();
+    audio.startLoop('drill');
   }
   primaryUp(): void {
     this.stop();
   }
   private stop(): void {
-    if (this.drilling) sfx.stopDrill();
+    if (this.drilling) audio.stopLoop();
     this.drilling = false;
     this.beam.visible = false;
   }
@@ -314,6 +336,7 @@ export class Drill implements HeldItem {
         if (this.sparkT <= 0) {
           this.sparkT = 0.04;
           ctx.effects.burst(hit.point, new THREE.Color(0xffd27a), 4, 4, 0.3, -8, 4);
+          ctx.effects.decal(hit.point, hit.normal, 0.5, SCORCH, 45); // carves a pit
         }
         ctx.effects.addShake(0.012);
         ctx.onHit?.(hit, 'drill', dt);
