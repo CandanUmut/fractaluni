@@ -21,6 +21,9 @@ import { Spaceship } from '../render/spaceship.ts';
 import { Effects } from '../render/effects.ts';
 import { ShipTerminal } from '../ui/shipTerminal.ts';
 import { Reticle } from '../ui/reticle.ts';
+import { Markers, type MarkerSpec } from '../ui/markers.ts';
+import { SurfaceHud } from '../ui/surfaceHud.ts';
+import { Objectives } from '../ui/objectives.ts';
 import { progression, energyMaxFor, cargoCapFor, scanRangeFor, gunDamageFor, drillTierFor, saveProgression } from '../sim/progression.ts';
 import { makeWeapons, type HeldItem, type WeaponCtx, type RayHit } from '../weapons/items.ts';
 import { audio } from '../audio/audio.ts';
@@ -81,6 +84,10 @@ export class SurfaceScene implements AppScene {
   private readonly ship = new Spaceship();
   private readonly terminal: ShipTerminal;
   private readonly reticle: Reticle;
+  private readonly markers: Markers;
+  private readonly shud: SurfaceHud;
+  private readonly objectives: Objectives;
+  private readonly proj = new THREE.Vector3();
   private nearShip = false;
   private lastMsg = '';
   private pickupT = 0;
@@ -189,6 +196,9 @@ export class SurfaceScene implements AppScene {
     this.scene.add(this.ship.group);
     this.terminal = new ShipTerminal(hudRoot);
     this.reticle = new Reticle(hudRoot);
+    this.markers = new Markers(hudRoot);
+    this.shud = new SurfaceHud(hudRoot);
+    this.objectives = new Objectives(hudRoot);
     this.terminal.onSell = () => this.sellCargo();
     this.terminal.onChange = () => this.applyProgression();
     this.energyMax = energyMaxFor();
@@ -203,7 +213,7 @@ export class SurfaceScene implements AppScene {
     };
     this.guardians.onKill = (type, amount, x, z) => {
       this.collect(type, amount, false);
-      this.lastMsg = `guardian down — looted ${amount} ${type.name}`;
+      this.markers.showBanner(`GUARDIAN DOWN  ·  +${amount} ${type.name}`);
       void x;
       void z;
     };
@@ -253,8 +263,13 @@ export class SurfaceScene implements AppScene {
     if (kind === 'bomb') {
       this.guardians.damageNear(hit.point.x, hit.point.z, this.originCX, this.originCZ, 10, 38, this.effects);
     } else if (guardian) {
-      this.guardians.damage(guardian, kind === 'gun' ? gunDamageFor() : 34 * dt, this.effects);
-      if (kind === 'gun') this.reticle.markHit();
+      const dmg = kind === 'gun' ? gunDamageFor() : 34 * dt;
+      this.guardians.damage(guardian, dmg, this.effects);
+      if (kind === 'gun') {
+        this.reticle.markHit();
+        const p = this.worldToScreen(guardian.mesh.position.clone().setY(guardian.mesh.position.y + 2));
+        if (p.visible) this.markers.damageNumber(p.sx, p.sy, `${Math.round(dmg)}`, '#ff9a6a');
+      }
       return;
     }
 
@@ -283,6 +298,7 @@ export class SurfaceScene implements AppScene {
     const got = Math.min(amount, room);
     this.inventory.set(type.id, (this.inventory.get(type.id) ?? 0) + got);
     this.cargoUsed += got;
+    this.objectives.complete('mine');
     if (this.pickupT <= 0) {
       this.pickupT = 0.25;
       audio.play(depleted ? 'extract' : 'pickup', 0.6);
@@ -349,6 +365,7 @@ export class SurfaceScene implements AppScene {
       const n = this.nodes.nearby(this.originCX, this.originCZ, this.camera.position.x, this.camera.position.z, this.scanRange).length;
       this.lastMsg = `scan: ${n} deposit${n === 1 ? '' : 's'} within scanner range`;
       audio.play('pickup', 0.5);
+      this.objectives.complete('scan');
     } else if (e.key === 'b' || e.key === 'B') {
       if (this.terminal.visible || this.nearShip) {
         this.terminal.toggle();
@@ -376,7 +393,9 @@ export class SurfaceScene implements AppScene {
     this.inventory.clear();
     this.cargoUsed = 0;
     saveProgression();
+    this.markers.showBanner(`SOLD CARGO  ·  +${Math.round(v)}¢`);
     this.lastMsg = `sold cargo for ${Math.round(v)}¢`;
+    this.objectives.complete('sell');
     return v;
   }
 
@@ -386,6 +405,14 @@ export class SurfaceScene implements AppScene {
     this.cargoCap = cargoCapFor();
     this.scanRange = scanRangeFor();
     this.drillTier = drillTierFor();
+  }
+
+  private worldToScreen(v: THREE.Vector3): { sx: number; sy: number; visible: boolean } {
+    this.proj.copy(v).project(this.camera);
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const visible = this.proj.z < 1 && Math.abs(this.proj.x) <= 1 && Math.abs(this.proj.y) <= 1;
+    return { sx: (this.proj.x * 0.5 + 0.5) * W, sy: (-this.proj.y * 0.5 + 0.5) * H, visible };
   }
 
   update(dt: number): void {
@@ -449,6 +476,52 @@ export class SurfaceScene implements AppScene {
       this.regenDelay = 0;
     }
     if (this.terminal.visible) this.terminal.setSellValue(this.cargoValue());
+
+    // World-space markers over deposits + guardians (hidden in the menu).
+    const specs: MarkerSpec[] = [];
+    if (!this.terminal.visible) {
+      const near = this.nodes.nearby(this.originCX, this.originCZ, this.camera.position.x, this.camera.position.z, this.scanRange);
+      for (let i = 0; i < Math.min(16, near.length); i++) {
+        const { node, dist } = near[i]!;
+        const p = this.worldToScreen(node.mesh.position);
+        if (p.visible) specs.push({ sx: p.sx, sy: p.sy, label: `${node.type.name} ${Math.round(dist)}m`, color: `#${node.type.color.toString(16).padStart(6, '0')}`, kind: 'deposit' });
+      }
+      for (const gm of this.guardians.meshes()) {
+        const d = this.camera.position.distanceTo(gm.position);
+        if (d > 80) continue;
+        const p = this.worldToScreen(gm.position.clone().setY(gm.position.y + 2.5));
+        if (p.visible) specs.push({ sx: p.sx, sy: p.sy, label: `${Math.round(d)}m`, color: '#ff5a4a', kind: 'guardian' });
+      }
+    }
+    this.markers.setMarkers(specs);
+    this.markers.update(dt);
+
+    // Onboarding objective advancement.
+    if (this.nodes.nearby(this.originCX, this.originCZ, this.camera.position.x, this.camera.position.z, this.drillReach).length > 0) {
+      this.objectives.complete('approach');
+    }
+    if (this.nearShip && this.cargoUsed > 0) this.objectives.complete('ship');
+    this.objectives.update(dt);
+
+    // Styled HUD.
+    const hint = !this.controller.isLocked
+      ? 'click to capture mouse'
+      : this.nearShip
+        ? '◈ at ship — recharging · press B to trade & upgrade'
+        : this.lastMsg;
+    this.shud.set({
+      energy: this.energy,
+      energyMax: this.energyMax,
+      cargo: this.cargoUsed,
+      cargoCap: this.cargoCap,
+      currency: progression.currency,
+      weapon: this.current.name,
+      drillTier: this.drillTier,
+      scanRange: this.scanRange,
+      nearShip: this.nearShip,
+      hint,
+    });
+    this.shud.setVisible(!this.terminal.visible);
 
     // HUD reticle: damage vignette from recent hits + low energy; hide crosshair in menu.
     const dmg = Math.max(this.hitFlash / 0.4, this.energy <= 1 ? 0.4 : 0);
@@ -519,6 +592,9 @@ export class SurfaceScene implements AppScene {
     this.ship.dispose();
     this.terminal.dispose();
     this.reticle.dispose();
+    this.markers.dispose();
+    this.shud.dispose();
+    this.objectives.dispose();
     this.controller.dispose();
     this.chunks.dispose();
     this.flora.dispose();
@@ -530,31 +606,9 @@ export class SurfaceScene implements AppScene {
   }
 
   hudLines(): string[] {
+    // Game stats live in the styled SurfaceHud; this is just minimal context.
     const p = this.planet;
     const s = this.star;
-    const lines = [
-      `scene: surface — ${p.biome}${p.inHabitableZone ? ' (habitable zone)' : ''}`,
-      `star ${s.spectralClass} ${s.temperature.toFixed(0)}K · orbit ${p.orbitalRadius.toFixed(2)} AU · gravity ${p.gravity.toFixed(2)}g`,
-    ];
-    if (!this.controller.isLocked) {
-      lines.push('click to capture mouse · WASD move · Shift sprint · Space jump/jetpack');
-    }
-    lines.push(`weapon: ${this.current.name}  ·  [1] gun  [2] bomb  [3] drill  · LMB use · [R] scan`);
-    const ebars = Math.round((this.energy / this.energyMax) * 10);
-    const eState = this.energy <= 1 ? '  DEPLETED — retreat / recharge' : this.hitFlash > 0 ? '  ⚠' : '';
-    lines.push(`energy ${'█'.repeat(ebars)}${'░'.repeat(10 - ebars)} ${this.energy.toFixed(0)}${eState}`);
-    lines.push(`cargo ${this.cargoUsed.toFixed(0)}/${this.cargoCap}  ·  ${progression.currency}¢  ·  drill T${this.drillTier}${this.inventoryText()}`);
-    lines.push(this.nearShip ? '◈ at ship — recharging · [B] trade & upgrade' : '[B] ship terminal (return to ship)');
-    if (this.lastMsg) lines.push(`» ${this.lastMsg}`);
-    lines.push('[T] take off to system');
-    return lines;
-  }
-
-  private inventoryText(): string {
-    const parts: string[] = [];
-    for (const [id, amt] of this.inventory) {
-      if (amt > 0) parts.push(`${RESOURCES[id]?.name ?? id} ${amt.toFixed(0)}`);
-    }
-    return parts.length ? `  ·  ${parts.join(' · ')}` : '';
+    return [`${p.biome}${p.inHabitableZone ? ' (HZ)' : ''} · star ${s.spectralClass} · gravity ${p.gravity.toFixed(2)}g`];
   }
 }

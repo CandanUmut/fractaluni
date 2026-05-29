@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { settings } from '../../ui/settings.ts';
 
 // Quaternion-based 6DOF free-fly controller. Pointer-lock mouse look (yaw+pitch
 // in the camera's local frame, so there's no gimbal lock), Q/E roll, WASD +
@@ -68,8 +69,9 @@ export class FlyController {
     this.up.set(0, 1, 0).applyQuaternion(this.target.quaternion);
     this.right.set(1, 0, 0).applyQuaternion(this.target.quaternion);
 
-    this.qYaw.setFromAxisAngle(this.up, -e.movementX * this.lookSensitivity);
-    this.qPitch.setFromAxisAngle(this.right, -e.movementY * this.lookSensitivity);
+    const sens = this.lookSensitivity * settings.sensitivity;
+    this.qYaw.setFromAxisAngle(this.up, -e.movementX * sens);
+    this.qPitch.setFromAxisAngle(this.right, -e.movementY * sens);
     this.target.quaternion.premultiply(this.qYaw).premultiply(this.qPitch);
     this.target.quaternion.normalize();
     this.yawInput += e.movementX;

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { clamp } from '../../core/math.ts';
+import { settings } from '../../ui/settings.ts';
 
 // Walk + fly character controller for the surface. Euler yaw/pitch mouse look
 // (pitch clamped, no roll). Walk mode applies gravity and follows the terrain
@@ -77,8 +78,9 @@ export class SurfaceController {
 
   private onMouseMove = (e: MouseEvent): void => {
     if (!this.locked || !this.enabled) return;
-    this.yaw -= e.movementX * this.lookSensitivity;
-    this.pitch -= e.movementY * this.lookSensitivity;
+    const sens = this.lookSensitivity * settings.sensitivity;
+    this.yaw -= e.movementX * sens;
+    this.pitch -= e.movementY * sens;
     this.pitch = clamp(this.pitch, -1.5, 1.5);
     this.swayX += e.movementX;
     this.swayY += e.movementY;

@@ -9,6 +9,9 @@ import { readState, writeState, type Location, type UniverseState } from './ui/u
 import { hashString } from './core/hash.ts';
 import { profileToLines } from './universe/debug.ts';
 import { loadProgression } from './sim/progression.ts';
+import { PauseMenu } from './ui/pauseMenu.ts';
+import { settings } from './ui/settings.ts';
+import { audio } from './audio/audio.ts';
 
 // Load global player progression (currency, equipment tiers) up front.
 void loadProgression();
@@ -19,6 +22,19 @@ const hudEl = document.getElementById('hud')!;
 const hud = new Hud(hudEl);
 const manager = new SceneManager();
 appEl.appendChild(manager.domElement);
+
+// Pause / settings menu (applies volume + FOV live).
+const pause = new PauseMenu(hudEl);
+audio.setVolume(settings.volume);
+pause.onVolume = (v) => audio.setVolume(v);
+function applyFov(v: number): void {
+  const s = manager.activeScene;
+  if (s) {
+    s.camera.fov = v;
+    s.camera.updateProjectionMatrix();
+  }
+}
+pause.onFov = applyFov;
 
 let state: UniverseState = readState();
 // Ensure the seed is always present in the address bar (Phase-0 done criterion).
@@ -69,6 +85,7 @@ async function goTo(loc: Location): Promise<void> {
   writeState(state);
   hud.setShareUrl(window.location.href);
   manager.setScene(sceneForLocation(loc));
+  applyFov(settings.fov);
   if (profileVisible) hud.setProfile(currentProfileLines());
   // Let a couple of frames render the new scene before revealing.
   await nextFrame();
@@ -78,6 +95,7 @@ async function goTo(loc: Location): Promise<void> {
 }
 
 manager.setScene(sceneForLocation(state.location));
+applyFov(settings.fov);
 hud.setShareUrl(window.location.href);
 
 // Derived-profile debug panel: prints the star/planet derivation for the current
@@ -94,7 +112,9 @@ function currentProfileLines(): string[] {
 // Debug: toggle the derived-profile panel. (Scene navigation is via in-world
 // flight + Enter/Backspace/take-off; number keys belong to weapon selection.)
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'p' || e.key === 'P') {
+  if (e.key === 'Escape') {
+    pause.toggle();
+  } else if (e.key === 'p' || e.key === 'P') {
     profileVisible = !profileVisible;
     const lines = profileVisible ? currentProfileLines() : null;
     hud.setProfile(lines);

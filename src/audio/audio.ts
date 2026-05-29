@@ -27,6 +27,13 @@ export class AudioManager {
   private readonly missing = new Set<SoundName>();
   private loop: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
   private loadStarted = false;
+  private masterVol = 0.6;
+
+  /** Set master volume [0,1] (applies live + to future sounds). */
+  setVolume(v: number): void {
+    this.masterVol = v;
+    if (this.master) this.master.gain.value = v;
+  }
 
   /** Call on a user gesture (e.g. pointer-lock click) to unlock audio + load. */
   init(): void {
@@ -35,7 +42,7 @@ export class AudioManager {
       const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new Ctx();
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.6;
+      this.master.gain.value = this.masterVol;
       this.master.connect(this.ctx.destination);
     } catch {
       this.enabled = false;
