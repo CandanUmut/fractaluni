@@ -56,6 +56,13 @@ export class SkyDome {
     this.mat.uniforms.uSunDir!.value.copy(dir).normalize();
   }
 
+  /** Recolor the dome (day/night cycle). */
+  setColors(horizon: THREE.Color, zenith: THREE.Color, sun: THREE.Color): void {
+    this.mat.uniforms.uHorizon!.value.copy(horizon);
+    this.mat.uniforms.uZenith!.value.copy(zenith);
+    this.mat.uniforms.uSun!.value.copy(sun);
+  }
+
   /** Keep the dome centered on the camera. */
   follow(pos: THREE.Vector3): void {
     this.mesh.position.copy(pos);

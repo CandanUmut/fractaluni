@@ -104,9 +104,23 @@ export class SurfaceScene implements AppScene {
   private originCX = 0;
   private originCZ = 0;
 
-  // Sun (casts shadows; follows the player).
+  // Sun + day/night cycle.
   private readonly sun: THREE.DirectionalLight;
   private readonly sunDir = new THREE.Vector3();
+  private ambient!: THREE.AmbientLight;
+  private timeOfDay = 0; // 0..1 around the day
+  private readonly dayLength = 210; // seconds per full day
+  private sunAz = 0;
+  private readonly dayHorizon = new THREE.Color();
+  private readonly dayZenith = new THREE.Color();
+  private readonly sunBase = new THREE.Color();
+  private readonly nightHorizon = new THREE.Color(0x0a1430);
+  private readonly nightZenith = new THREE.Color(0x04060f);
+  private readonly nightAmbient = new THREE.Color(0x1a2440);
+  private readonly warmSun = new THREE.Color(0xff8a4a);
+  private readonly cTmpA = new THREE.Color();
+  private readonly cTmpB = new THREE.Color();
+  private readonly cTmpC = new THREE.Color();
 
   constructor(
     universeSeed: number,
@@ -158,7 +172,15 @@ export class SurfaceScene implements AppScene {
     this.sun = sun;
     this.scene.add(sun);
     this.scene.add(sun.target);
-    this.scene.add(new THREE.AmbientLight(rgbToHex(pal.skyZenith), 0.7));
+    this.ambient = new THREE.AmbientLight(rgbToHex(pal.skyZenith), 0.7);
+    this.scene.add(this.ambient);
+
+    // Day/night base colors + seeded starting time-of-day.
+    this.dayHorizon.set(rgbToHex(pal.skyHorizon));
+    this.dayZenith.set(rgbToHex(pal.skyZenith));
+    this.sunBase.set(rgbToHex(pal.sun));
+    this.sunAz = az;
+    this.timeOfDay = 0.05 + rng() * 0.5; // start somewhere in daylight
 
     this.sky = new SkyDome(pal.skyHorizon, pal.skyZenith, pal.sun, sunDir);
     this.scene.add(this.sky.mesh);
@@ -430,6 +452,41 @@ export class SurfaceScene implements AppScene {
     this.drillTier = drillTierFor();
   }
 
+  /** Advance the day/night cycle: arc the sun, recolor sky/light/fog, gate solar. */
+  private dayNightDaylight = 1;
+  private updateDayNight(dt: number): void {
+    this.timeOfDay = (this.timeOfDay + dt / this.dayLength) % 1;
+    const theta = this.timeOfDay * TAU;
+    const height = Math.sin(theta); // -1 (midnight) .. +1 (noon)
+    const horiz = Math.cos(theta);
+    this.sunDir.set(Math.cos(this.sunAz) * horiz, height, Math.sin(this.sunAz) * horiz).normalize();
+
+    const daylight = clamp(height * 1.3 + 0.18, 0, 1);
+    this.dayNightDaylight = daylight;
+    // Warm the sun near the horizon (sunrise/sunset), white-ish at noon.
+    const warmth = 1 - clamp(height * 2.2, 0, 1);
+    this.cTmpC.copy(this.sunBase).lerp(this.warmSun, warmth * 0.8);
+
+    // Directional sun.
+    this.sun.color.copy(this.cTmpC);
+    this.sun.intensity = Math.max(0.04, daylight * 2.6);
+    this.sun.target.position.copy(this.camera.position);
+    this.sun.position.copy(this.camera.position).addScaledVector(this.sunDir, 200);
+    this.sun.castShadow = daylight > 0.08;
+
+    // Ambient.
+    this.ambient.color.copy(this.nightAmbient).lerp(this.dayZenith, daylight);
+    this.ambient.intensity = lerp(0.22, 0.7, daylight);
+
+    // Sky + fog + background.
+    this.cTmpA.copy(this.nightHorizon).lerp(this.dayHorizon, daylight);
+    this.cTmpB.copy(this.nightZenith).lerp(this.dayZenith, daylight);
+    this.sky.setColors(this.cTmpA, this.cTmpB, this.cTmpC);
+    this.sky.setSunDir(this.sunDir);
+    (this.scene.fog as THREE.FogExp2).color.copy(this.cTmpA);
+    (this.scene.background as THREE.Color).copy(this.cTmpA);
+  }
+
   private worldToScreen(v: THREE.Vector3): { sx: number; sy: number; visible: boolean } {
     this.proj.copy(v).project(this.camera);
     const W = window.innerWidth;
@@ -462,9 +519,7 @@ export class SurfaceScene implements AppScene {
     this.birds?.update(sdt, this.camera.position);
     this.herds.update(sdt, this.camera.position);
     this.sky.follow(this.camera.position);
-    // Keep the shadow-casting sun centered on the player.
-    this.sun.target.position.copy(this.camera.position);
-    this.sun.position.copy(this.camera.position).addScaledVector(this.sunDir, 200);
+    this.updateDayNight(dt);
     if (this.water) this.water.update(sdt, this.camera.position, this.sampler.seaLevel);
 
     // Deposits + guardians stream around the player.
@@ -485,7 +540,7 @@ export class SurfaceScene implements AppScene {
       this.regenDelay = 1.2;
     }
     this.regenDelay -= sdt;
-    if (this.regenDelay <= 0) this.energy += (4 + this.solarRegen) * sdt;
+    if (this.regenDelay <= 0) this.energy += (4 + this.solarRegen * this.dayNightDaylight) * sdt;
     this.energy = clamp(this.energy, 0, this.energyMax);
     if (this.hitFlash > 0) this.hitFlash -= dt;
 
