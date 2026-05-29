@@ -5,6 +5,7 @@ export class Hud {
   private readonly root: HTMLElement;
   private readonly fpsEl: HTMLElement;
   private readonly bodyEl: HTMLElement;
+  private readonly profileEl: HTMLElement;
 
   // FPS smoothing
   private frames = 0;
@@ -37,6 +38,29 @@ export class Hud {
     panel.appendChild(this.fpsEl);
     panel.appendChild(this.bodyEl);
     this.root.appendChild(panel);
+
+    // Bottom-left debug profile panel (toggled with 'p').
+    this.profileEl = document.createElement('div');
+    this.profileEl.style.position = 'absolute';
+    this.profileEl.style.bottom = '8px';
+    this.profileEl.style.left = '8px';
+    this.profileEl.style.padding = '6px 9px';
+    this.profileEl.style.background = 'rgba(8,12,22,0.55)';
+    this.profileEl.style.border = '1px solid rgba(120,160,220,0.18)';
+    this.profileEl.style.borderRadius = '6px';
+    this.profileEl.style.whiteSpace = 'pre';
+    this.profileEl.style.display = 'none';
+    this.root.appendChild(this.profileEl);
+  }
+
+  /** Show/hide the derived-profile debug panel. Pass null to hide. */
+  setProfile(lines: string[] | null): void {
+    if (!lines) {
+      this.profileEl.style.display = 'none';
+      return;
+    }
+    this.profileEl.style.display = 'block';
+    this.profileEl.textContent = lines.join('\n');
   }
 
   /** Call once per frame with the frame delta in seconds. */

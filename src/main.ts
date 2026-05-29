@@ -3,6 +3,8 @@ import { PlaceholderScene } from './scenes/PlaceholderScene.ts';
 import type { AppScene } from './scenes/AppScene.ts';
 import { Hud } from './ui/hud.ts';
 import { readState, writeState, type Location, type UniverseState } from './ui/urlState.ts';
+import { hashString } from './core/hash.ts';
+import { profileToLines } from './universe/debug.ts';
 
 const appEl = document.getElementById('app')!;
 const hudEl = document.getElementById('hud')!;
@@ -33,16 +35,37 @@ function goTo(loc: Location): void {
   state = { ...state, location: loc };
   writeState(state);
   manager.setScene(sceneForLocation(loc));
+  if (profileVisible) hud.setProfile(currentProfileLines());
 }
 
 manager.setScene(sceneForLocation(state.location));
+
+// Derived-profile debug panel: prints the star/planet derivation for the current
+// location (defaults to star 0 / planet 0 when the location is less specific).
+let profileVisible = false;
+function currentProfileLines(): string[] {
+  const loc = state.location;
+  const cell = loc.kind === 'galaxy' ? ([0, 0, 0] as const) : loc.cell;
+  const star = loc.kind === 'galaxy' ? 0 : loc.star;
+  const planet = loc.kind === 'surface' ? loc.planet : 0;
+  return profileToLines(state.seed, cell, star, planet);
+}
 
 // Demonstrate SceneManager swapping + URL state via number keys (placeholder nav).
 window.addEventListener('keydown', (e) => {
   if (e.key === '1') goTo({ kind: 'galaxy' });
   else if (e.key === '2') goTo({ kind: 'system', cell: [0, 0, 0], star: 0 });
   else if (e.key === '3') goTo({ kind: 'surface', cell: [0, 0, 0], star: 0, planet: 0 });
+  else if (e.key === 'p' || e.key === 'P') {
+    profileVisible = !profileVisible;
+    const lines = profileVisible ? currentProfileLines() : null;
+    hud.setProfile(lines);
+    if (lines) console.log(lines.join('\n')); // also dump to console per the brief
+  }
 });
+
+// Confirm the seed resolves to a uint32 universe seed on load (Phase-1 sanity log).
+console.log(`universe seed "${state.seed}" → u32 ${hashString(state.seed)}`);
 
 // Reflect browser back/forward navigation.
 window.addEventListener('popstate', () => {
