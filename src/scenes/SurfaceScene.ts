@@ -7,6 +7,7 @@ import { biomePalette } from '../palette/index.ts';
 import { makeTerrain, ChunkManager, CHUNK_SIZE } from '../gen/terrain.ts';
 import { FloraManager } from '../gen/flora.ts';
 import { NodeManager } from '../gen/nodes.ts';
+import { GuardianManager } from '../agents/guardians.ts';
 import { RESOURCES, type ResourceType } from '../universe/resources.ts';
 import { Compass, type CompassPing } from '../ui/compass.ts';
 import { planetPath, loadDiff, saveDiff } from '../sim/persistence.ts';
@@ -73,6 +74,12 @@ export class SurfaceScene implements AppScene {
   private readonly drillReach = 9;
   private lastMsg = '';
   private pickupT = 0;
+
+  // v3 Phase D/E: guardians + non-lethal energy.
+  private readonly guardians: GuardianManager;
+  private energy = 100;
+  private energyMax = 100;
+  private hitFlash = 0;
 
   // Floating origin on XZ (Y stays near the ground).
   private originCX = 0;
@@ -163,10 +170,26 @@ export class SurfaceScene implements AppScene {
     this.scene.add(this.nodes.group);
     const hudRoot = document.getElementById('hud') ?? document.body;
     this.compass = new Compass(hudRoot);
+    // Guardians defend valuable deposits.
+    this.guardians = new GuardianManager(this.planet.seed, this.sampler, this.diff, this.nodes.resourcePalette, pal);
+    this.scene.add(this.guardians.group);
+    this.guardians.onAttack = (dmg) => {
+      this.energy = Math.max(0, this.energy - dmg);
+      this.hitFlash = 0.4;
+      this.lastMsg = `⚠ hit! energy −${dmg}`;
+    };
+    this.guardians.onKill = (type, amount, x, z) => {
+      this.collect(type, amount, false);
+      this.lastMsg = `guardian down — looted ${amount} ${type.name}`;
+      void x;
+      void z;
+    };
+
     void loadDiff(this.diffKey).then((d) => {
       if (d) {
         for (const [k, e] of d.cells) this.diff.cells.set(k, e);
         this.nodes.invalidate(); // re-stream so already-depleted nodes stay gone
+        this.guardians.invalidate(); // ...and killed guardians stay dead
       }
     });
 
@@ -189,8 +212,9 @@ export class SurfaceScene implements AppScene {
     this.raycaster.set(origin, dir);
     this.raycaster.far = far;
     this.raycaster.near = 0;
-    // Nodes first (few; lets the drill/bomb target deposits over terrain behind).
+    // Nodes + guardians first (few), then terrain behind them.
     const targets = this.nodes.meshes();
+    for (const g of this.guardians.meshes()) targets.push(g);
     for (const c of this.chunks.group.children) targets.push(c);
     const hits = this.raycaster.intersectObjects(targets, false);
     if (hits.length === 0) return null;
@@ -201,6 +225,15 @@ export class SurfaceScene implements AppScene {
   };
 
   private readonly onHit = (hit: RayHit, kind: 'gun' | 'bomb' | 'drill', dt: number): void => {
+    // Guardians take damage from any tool; bombs also splash nearby ones.
+    const guardian = GuardianManager.guardianOf(hit.object);
+    if (kind === 'bomb') {
+      this.guardians.damageNear(hit.point.x, hit.point.z, this.originCX, this.originCZ, 10, 38, this.effects);
+    } else if (guardian) {
+      this.guardians.damage(guardian, kind === 'gun' ? 12 : 34 * dt, this.effects);
+      return;
+    }
+
     const node = NodeManager.nodeOf(hit.object);
     if (!node) return;
     if (kind === 'drill') {
@@ -316,8 +349,15 @@ export class SurfaceScene implements AppScene {
     this.sky.follow(this.camera.position);
     if (this.water) this.water.update(sdt, this.camera.position, this.sampler.seaLevel);
 
-    // Deposits stream around the player.
+    // Deposits + guardians stream around the player.
     this.nodes.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
+    const playerAbsX = this.originCX * CHUNK_SIZE + this.camera.position.x;
+    const playerAbsZ = this.originCZ * CHUNK_SIZE + this.camera.position.z;
+    this.guardians.update(sdt, playerAbsX, playerAbsZ, this.originCX, this.originCZ);
+
+    // Energy: regenerates passively; never lethal (full model in Phase E).
+    this.energy = Math.min(this.energyMax, this.energy + 6 * dt);
+    if (this.hitFlash > 0) this.hitFlash -= dt;
 
     // Weapons (aim from the clean camera orientation before shake).
     this.current.update(sdt, this.buildCtx());
@@ -377,6 +417,7 @@ export class SurfaceScene implements AppScene {
     for (const w of this.weapons) w.dispose();
     this.effects.dispose();
     this.nodes.dispose();
+    this.guardians.dispose();
     this.compass.dispose();
     this.controller.dispose();
     this.chunks.dispose();
@@ -399,6 +440,8 @@ export class SurfaceScene implements AppScene {
       lines.push('click to capture mouse · WASD move · Shift sprint · Space jump/jetpack');
     }
     lines.push(`weapon: ${this.current.name}  ·  [1] gun  [2] bomb  [3] drill  · LMB use · [R] scan`);
+    const ebars = Math.round((this.energy / this.energyMax) * 10);
+    lines.push(`energy ${'█'.repeat(ebars)}${'░'.repeat(10 - ebars)} ${this.energy.toFixed(0)}${this.hitFlash > 0 ? '  ⚠' : ''}`);
     lines.push(`cargo ${this.cargoUsed.toFixed(0)}/${this.cargoCap}${this.inventoryText()}`);
     if (this.lastMsg) lines.push(`» ${this.lastMsg}`);
     lines.push('[T] take off to system');

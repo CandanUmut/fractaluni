@@ -24,12 +24,30 @@ export interface DepositNode {
   mesh: THREE.Mesh;
 }
 
-interface NodeSpec {
+export interface NodeSpec {
   key: string;
   ax: number;
   az: number;
   type: ResourceType;
   richness: number;
+}
+
+/** Deterministic node specs for a chunk (shared by the node + guardian layers).
+ *  Independent of depletion state. */
+export function chunkNodeSpecs(planetSeed: number, palette: ResourceWeight[], cx: number, cz: number): NodeSpec[] {
+  if (palette.length === 0) return [];
+  const rng = makeRNG(deriveSeed(planetSeed, 0x0de, cx, cz));
+  const count = Math.floor(rng() * 3.3); // 0..3
+  const out: NodeSpec[] = [];
+  for (let i = 0; i < count; i++) {
+    const ax = cx * CHUNK_SIZE + rng() * CHUNK_SIZE;
+    const az = cz * CHUNK_SIZE + rng() * CHUNK_SIZE;
+    const type = pickResource(palette, rng);
+    const tierMul = type.tier === 'exotic' ? 0.55 : type.tier === 'rare' ? 0.8 : 1;
+    const richness = Math.round(rangeFloat(rng, 30, 85) * tierMul);
+    out.push({ key: `${cx},${cz},${i}`, ax, az, type, richness });
+  }
+  return out;
 }
 
 export class NodeManager {
@@ -48,21 +66,12 @@ export class NodeManager {
     this.diff = diff;
   }
 
-  /** Deterministic node specs for a chunk (independent of depletion state). */
   private specsForChunk(cx: number, cz: number): NodeSpec[] {
-    if (this.palette.length === 0) return [];
-    const rng = makeRNG(deriveSeed(this.planetSeed, 0x0de, cx, cz));
-    const count = Math.floor(rng() * 3.3); // 0..3
-    const out: NodeSpec[] = [];
-    for (let i = 0; i < count; i++) {
-      const ax = cx * CHUNK_SIZE + rng() * CHUNK_SIZE;
-      const az = cz * CHUNK_SIZE + rng() * CHUNK_SIZE;
-      const type = pickResource(this.palette, rng);
-      const tierMul = type.tier === 'exotic' ? 0.55 : type.tier === 'rare' ? 0.8 : 1;
-      const richness = Math.round(rangeFloat(rng, 30, 85) * tierMul);
-      out.push({ key: `${cx},${cz},${i}`, ax, az, type, richness });
-    }
-    return out;
+    return chunkNodeSpecs(this.planetSeed, this.palette, cx, cz);
+  }
+
+  get resourcePalette(): ResourceWeight[] {
+    return this.palette;
   }
 
   update(centerCX: number, centerCZ: number, originCX: number, originCZ: number): void {
