@@ -79,6 +79,8 @@ export class SurfaceScene implements AppScene {
   private readonly guardians: GuardianManager;
   private energy = 100;
   private energyMax = 100;
+  private readonly solarRegen: number; // from the star's luminosity
+  private regenDelay = 0; // pause regen briefly after spending
   private hitFlash = 0;
 
   // Floating origin on XZ (Y stays near the ground).
@@ -95,6 +97,8 @@ export class SurfaceScene implements AppScene {
     this.dom = dom;
     this.star = deriveStarAt(universeSeed, cell, starIndex);
     this.planet = derivePlanet(this.star, planetIndex);
+    // Solar recharge scales with the star's luminosity — a derivation-pipeline payoff.
+    this.solarRegen = clamp(2 + Math.pow(this.star.luminosity, 0.25) * 4, 2, 13);
     const pal = biomePalette(this.planet, this.star);
     this.sampler = makeTerrain(this.planet, this.planet.seed, pal);
 
@@ -276,6 +280,14 @@ export class SurfaceScene implements AppScene {
       effects: this.effects,
       kick: (b, u, r) => this.viewmodel.addKick(b, u, r),
       onHit: this.onHit,
+      spendEnergy: (amount) => {
+        if (this.energy >= amount) {
+          this.energy -= amount;
+          if (amount > 0) this.regenDelay = 1.2;
+          return true;
+        }
+        return false;
+      },
     };
   }
 
@@ -328,6 +340,7 @@ export class SurfaceScene implements AppScene {
     // Hit-stop slows gameplay briefly on solid hits (effects time itself on real dt).
     const sdt = dt * this.effects.timeFactor;
 
+    this.controller.energyOK = this.energy > 1; // gates sprint/jetpack/throttle
     this.controller.update(sdt);
 
     // Floating-origin recenter on XZ (whole chunks).
@@ -355,8 +368,20 @@ export class SurfaceScene implements AppScene {
     const playerAbsZ = this.originCZ * CHUNK_SIZE + this.camera.position.z;
     this.guardians.update(sdt, playerAbsX, playerAbsZ, this.originCX, this.originCZ);
 
-    // Energy: regenerates passively; never lethal (full model in Phase E).
-    this.energy = Math.min(this.energyMax, this.energy + 6 * dt);
+    // Energy: spent by sprint/jetpack (tools spend via spendEnergy; hits drain
+    // it). Regenerates after a short pause (passive + solar). Never lethal —
+    // at zero, sprint/jetpack/tools are disabled and walking is throttled.
+    if (this.controller.isSprinting) {
+      this.energy -= 7 * sdt;
+      this.regenDelay = 1.2;
+    }
+    if (this.controller.isJetpacking) {
+      this.energy -= 15 * sdt;
+      this.regenDelay = 1.2;
+    }
+    this.regenDelay -= sdt;
+    if (this.regenDelay <= 0) this.energy += (4 + this.solarRegen) * sdt;
+    this.energy = clamp(this.energy, 0, this.energyMax);
     if (this.hitFlash > 0) this.hitFlash -= dt;
 
     // Weapons (aim from the clean camera orientation before shake).
@@ -441,7 +466,8 @@ export class SurfaceScene implements AppScene {
     }
     lines.push(`weapon: ${this.current.name}  ·  [1] gun  [2] bomb  [3] drill  · LMB use · [R] scan`);
     const ebars = Math.round((this.energy / this.energyMax) * 10);
-    lines.push(`energy ${'█'.repeat(ebars)}${'░'.repeat(10 - ebars)} ${this.energy.toFixed(0)}${this.hitFlash > 0 ? '  ⚠' : ''}`);
+    const eState = this.energy <= 1 ? '  DEPLETED — retreat / recharge' : this.hitFlash > 0 ? '  ⚠' : '';
+    lines.push(`energy ${'█'.repeat(ebars)}${'░'.repeat(10 - ebars)} ${this.energy.toFixed(0)}${eState}`);
     lines.push(`cargo ${this.cargoUsed.toFixed(0)}/${this.cargoCap}${this.inventoryText()}`);
     if (this.lastMsg) lines.push(`» ${this.lastMsg}`);
     lines.push('[T] take off to system');

@@ -24,6 +24,8 @@ export interface WeaponCtx {
   kick: (back: number, up: number, rot: number) => void;
   /** Called when something is struck (Phase C/D: extraction / damage). */
   onHit?: (hit: RayHit, kind: 'gun' | 'bomb' | 'drill', dt: number) => void;
+  /** Spend energy; returns false (action denied) if there isn't enough. */
+  spendEnergy: (amount: number) => boolean;
 }
 
 export type ItemKind = 'gun' | 'bomb' | 'drill';
@@ -115,6 +117,7 @@ export class Gun implements HeldItem {
   }
 
   private fire(ctx: WeaponCtx): void {
+    if (!ctx.spendEnergy(1.5)) return; // out of energy → can't fire
     const hit = ctx.raycast(ctx.pos, ctx.dir, this.range);
     (this.flash.material as THREE.MeshBasicMaterial).opacity = 1;
     ctx.kick(0.05, 0.02, -0.06);
@@ -189,6 +192,7 @@ export class Bomb implements HeldItem {
   }
   primaryDown(ctx: WeaponCtx): void {
     if (this.cooldown > 0) return;
+    if (!ctx.spendEnergy(6)) return;
     this.cooldown = this.cooldownTime;
     const mat = new THREE.MeshStandardMaterial({ color: 0x2b3340, flatShading: true });
     const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.35, 1), mat);
@@ -323,7 +327,7 @@ export class Drill implements HeldItem {
   }
 
   update(dt: number, ctx: WeaponCtx): void {
-    if (this.drilling) {
+    if (this.drilling && ctx.spendEnergy(9 * dt)) {
       this.spin += dt * 22;
       this.bit.rotation.z = this.spin;
       const hit = ctx.raycast(ctx.pos, ctx.dir, this.range);
@@ -346,6 +350,7 @@ export class Drill implements HeldItem {
     } else {
       this.spin += dt * 2;
       this.bit.rotation.z = this.spin;
+      this.beam.visible = false; // stalled (released or out of energy)
     }
   }
 

@@ -11,6 +11,9 @@ export type MoveMode = 'walk' | 'fly';
 export class SurfaceController {
   enabled = true;
   mode: MoveMode = 'walk';
+  /** Set false by the scene when energy is empty — disables sprint/jetpack and
+   *  throttles walking (non-lethal pressure). */
+  energyOK = true;
   eyeHeight = 2.6;
   walkSpeed = 14;
   flySpeed = 70;
@@ -128,7 +131,7 @@ export class SurfaceController {
     this.euler.set(this.pitch, this.yaw, 0, 'YXZ');
     this.camera.quaternion.setFromEuler(this.euler);
 
-    const sprint = this.k('shift');
+    const sprint = this.k('shift') && this.energyOK;
     this.sprinting = sprint && this.moving;
     if (this.mode === 'fly') {
       this.updateFly(dt, sprint);
@@ -167,7 +170,7 @@ export class SurfaceController {
     if (this.k('d')) this.move.add(this.right);
     if (this.k('a')) this.move.addScaledVector(this.right, -1);
     this.moving = this.move.lengthSq() > 0;
-    const speed = this.walkSpeed * (sprint ? 2 : 1);
+    const speed = this.walkSpeed * (sprint ? 2 : 1) * (this.energyOK ? 1 : 0.5);
     if (this.moving) this.move.normalize().multiplyScalar(speed * dt);
     this.camera.position.x += this.move.x;
     this.camera.position.z += this.move.z;
@@ -184,8 +187,8 @@ export class SurfaceController {
       if (this.k(' ')) this.vy = this.jumpSpeed; // jump off the ground
     } else {
       this.onGround = false;
-      // Jetpack: hold jump in the air for upward thrust (energy-gated in Phase E).
-      if (this.k(' ') && this.vy < this.jetpackMaxRise) {
+      // Jetpack: hold jump in the air for upward thrust (disabled when empty).
+      if (this.k(' ') && this.vy < this.jetpackMaxRise && this.energyOK) {
         this.vy += this.jetpackAccel * dt;
         this.jetpacking = true;
       }
