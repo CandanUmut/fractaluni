@@ -147,7 +147,7 @@ export class SurfaceScene implements AppScene {
     } else {
       this.birds = null;
     }
-    this.herds = new AnimalHerds(this.planet, this.planet.seed, pal, this.sampler, heightAtLocal);
+    this.herds = new AnimalHerds(this.planet, this.planet.seed, pal, this.sampler);
     this.scene.add(this.herds.group);
 
     // v2 Phase A: persistent diff. Markers prove the load/apply/save plumbing.
@@ -256,15 +256,13 @@ export class SurfaceScene implements AppScene {
       this.camera.position.z -= sz * CHUNK_SIZE;
       this.originCX += sx;
       this.originCZ += sz;
-      // Keep dynamic agents in place relative to the world after the shift.
+      // Keep ambient birds in place relative to the world after the shift.
       this.birds?.shift(sx * CHUNK_SIZE, sz * CHUNK_SIZE);
-      this.herds.shift(sx * CHUNK_SIZE, sz * CHUNK_SIZE);
     }
 
     this.chunks.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
     this.flora.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
     this.birds?.update(dt, this.camera.position);
-    this.herds.update(dt, this.camera.position);
     this.sky.follow(this.camera.position);
     if (this.water) this.water.update(dt, this.camera.position, this.sampler.seaLevel);
 
@@ -286,6 +284,8 @@ export class SurfaceScene implements AppScene {
         steps++;
       }
     }
+    // Render the population fields as a sample of visible creatures.
+    this.herds.update(dt, this.eco, this.originCX, this.originCZ);
     // Debug overlay (player cell relative to the sim grid origin).
     const absX = this.originCX * CHUNK_SIZE + this.camera.position.x;
     const absZ = this.originCZ * CHUNK_SIZE + this.camera.position.z;
@@ -323,8 +323,8 @@ export class SurfaceScene implements AppScene {
       `T_surf ${p.surfaceTemp.toFixed(0)}K · gravity ${p.gravity.toFixed(2)}g · water ${p.waterFraction.toFixed(2)} · atmo ${p.atmosphere.toFixed(2)}`,
       `mode: ${this.controller.mode}  (G to toggle walk/fly)`,
       `markers: ${this.markers.length}  ([M] mark this spot — persists across visits)`,
-      `sim: ${this.paused ? 'paused' : `▶ ${this.timeScale}×`}  veg ${this.eco.totalVegetation().toFixed(0)}  · [K] pause [L] speed [J] skip`,
-      `overlay: ${this.overlay.visible ? this.overlay.field : 'off'}  · [O] toggle [I] field`,
+      `sim: ${this.paused ? 'paused' : `▶ ${this.timeScale}×`}  veg ${this.eco.totalVegetation().toFixed(0)} · herb ${this.eco.totalHerbivores().toFixed(0)} · pred ${this.eco.totalPredators().toFixed(0)}`,
+      `[K] pause [L] speed [J] skip · overlay: ${this.overlay.visible ? this.overlay.field : 'off'} ([O] toggle [I] field)`,
     ];
     if (!this.controller.isLocked) {
       lines.push('click to capture mouse · WASD move · Space jump/up · Shift sprint/boost');

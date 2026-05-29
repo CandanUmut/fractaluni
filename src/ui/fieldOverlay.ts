@@ -41,8 +41,8 @@ export class FieldOverlay {
   }
 
   cycle(): void {
-    this.field =
-      this.field === 'vegetation' ? 'moisture' : this.field === 'moisture' ? 'temperature' : 'vegetation';
+    const order: FieldName[] = ['vegetation', 'moisture', 'temperature', 'herbivore', 'predator'];
+    this.field = order[(order.indexOf(this.field) + 1) % order.length]!;
   }
 
   render(eco: Ecosystem, playerI: number, playerJ: number): void {
@@ -61,6 +61,12 @@ export class FieldOverlay {
         r = 20 + v * 40; g = 40 + v * 200; b = 30 + v * 40;
       } else if (this.field === 'moisture') {
         r = 30; g = 60 + v * 120; b = 80 + v * 175;
+      } else if (this.field === 'herbivore') {
+        const n = Math.min(1, v / 6);
+        r = 30 + n * 220; g = 30 + n * 170; b = 20; // amber
+      } else if (this.field === 'predator') {
+        const n = Math.min(1, v / 3);
+        r = 40 + n * 215; g = 20; b = 40 + n * 90; // crimson
       } else {
         // temperature suitability: blue (cold/unfit) → green (ideal) → red (hot/unfit)
         r = 40 + (1 - v) * 200; g = 40 + v * 200; b = 60;

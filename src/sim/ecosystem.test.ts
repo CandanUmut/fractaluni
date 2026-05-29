@@ -35,8 +35,15 @@ function avgVegColumns(eco: Ecosystem, iLo: number, iHi: number): number {
 
 describe('ecosystem fields', () => {
   test('vegetation grows denser near water than far inland', () => {
+    // Isolate the climate→vegetation coupling by removing grazers (the food web
+    // is exercised separately); otherwise herbivores crop the lush near-water
+    // cells and confound this specific relationship.
     const eco = makeEco();
-    for (let t = 0; t < 400; t++) eco.step(0.2);
+    for (let t = 0; t < 400; t++) {
+      eco.herbivore.fill(0);
+      eco.predator.fill(0);
+      eco.step(0.2);
+    }
     const nearWater = avgVegColumns(eco, 20, 24); // just onto land
     const farInland = avgVegColumns(eco, 35, 39); // dry far edge
     expect(nearWater).toBeGreaterThan(farInland);
@@ -47,6 +54,25 @@ describe('ecosystem fields', () => {
     const cold = makeEco({ surfaceTemp: 230 });
     for (let t = 0; t < 200; t++) cold.step(0.2);
     expect(cold.totalVegetation() / (cold.width * cold.height)).toBeLessThan(0.05);
+  });
+
+  test('a food web establishes: herbivores and predators persist', () => {
+    const eco = makeEco();
+    for (let t = 0; t < 700; t++) eco.step(0.2);
+    expect(eco.totalHerbivores()).toBeGreaterThan(0);
+    expect(eco.totalPredators()).toBeGreaterThan(0);
+  });
+
+  test('overgrazing suppresses vegetation (visible cascade)', () => {
+    const grazed = makeEco();
+    for (let t = 0; t < 300; t++) grazed.step(0.2);
+    const ungrazed = makeEco();
+    for (let t = 0; t < 300; t++) {
+      ungrazed.herbivore.fill(0); // remove the grazers each tick
+      ungrazed.predator.fill(0);
+      ungrazed.step(0.2);
+    }
+    expect(ungrazed.totalVegetation()).toBeGreaterThan(grazed.totalVegetation());
   });
 
   test('simulation is deterministic', () => {

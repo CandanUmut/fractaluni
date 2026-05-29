@@ -14,6 +14,18 @@ import { SIM_CELL } from './planetDiff.ts';
 const IDEAL_TEMP = 289; // K — vegetation's happy temperature
 const TEMP_SIGMA = 26;
 
+// Population coupling (Lotka-Volterra-flavored, with caps for stability).
+const GRAZE = 0.16; // vegetation eaten per herbivore
+const H_GROW = 0.32; // herbivore growth per unit vegetation
+const H_DEATH = 0.05; // herbivore baseline death
+const H_PRED = 0.09; // herbivore loss per predator
+const P_GROW = 0.05; // predator growth per herbivore
+const P_DEATH = 0.12; // predator baseline death
+const H_MIGRATE = 0.12;
+const P_MIGRATE = 0.1;
+const H_MAX = 8;
+const P_MAX = 4;
+
 export interface EcosystemConfig {
   /** Grid dimensions in cells. */
   width: number;
@@ -30,7 +42,7 @@ export interface EcosystemConfig {
   waterFraction: number;
 }
 
-export type FieldName = 'vegetation' | 'moisture' | 'temperature';
+export type FieldName = 'vegetation' | 'moisture' | 'temperature' | 'herbivore' | 'predator';
 
 export class Ecosystem {
   readonly width: number;
@@ -40,6 +52,8 @@ export class Ecosystem {
 
   readonly vegetation: Float32Array;
   readonly moisture: Float32Array;
+  readonly herbivore: Float32Array;
+  readonly predator: Float32Array;
   /** Temperature suitability [0,1] (precomputed; near-static in Phase B). */
   readonly tempSuit: Float32Array;
   readonly isWater: Uint8Array;
@@ -48,6 +62,8 @@ export class Ecosystem {
   private readonly cfg: EcosystemConfig;
   private readonly tmp: Float32Array;
   private readonly tmpV: Float32Array;
+  private readonly tmpH: Float32Array;
+  private readonly tmpP: Float32Array;
 
   constructor(cfg: EcosystemConfig) {
     this.cfg = cfg;
@@ -58,11 +74,15 @@ export class Ecosystem {
     const n = cfg.width * cfg.height;
     this.vegetation = new Float32Array(n);
     this.moisture = new Float32Array(n);
+    this.herbivore = new Float32Array(n);
+    this.predator = new Float32Array(n);
     this.tempSuit = new Float32Array(n);
     this.baseTemp = new Float32Array(n);
     this.isWater = new Uint8Array(n);
     this.tmp = new Float32Array(n);
     this.tmpV = new Float32Array(n);
+    this.tmpH = new Float32Array(n);
+    this.tmpP = new Float32Array(n);
     this.seed();
   }
 
@@ -100,6 +120,9 @@ export class Ecosystem {
         // A little starter vegetation where conditions allow, so it can spread.
         const cap = this.moisture[k]! * this.tempSuit[k]!;
         this.vegetation[k] = water ? 0 : 0.12 * cap;
+        // Starter populations: herbivores where there's forage, few predators.
+        this.herbivore[k] = water ? 0 : 0.5 * this.vegetation[k]!;
+        this.predator[k] = 0.15 * this.herbivore[k]!;
       }
     }
   }
@@ -143,12 +166,39 @@ export class Ecosystem {
         const nAvg = this.neighborAvg(this.vegetation, i, j);
         const grow = 0.6 * v * (1 - v / Math.max(cap, 1e-3));
         const spread = 0.25 * (nAvg - v);
-        let dv = grow + spread;
+        const graze = GRAZE * this.herbivore[k]! * v; // overgrazing collapses veg
+        let dv = grow + spread - graze;
         if (cap < 0.08) dv -= 0.5 * v; // unfavorable → recede
         this.tmpV[k] = clamp01(v + dt * dv);
       }
     }
     this.vegetation.set(this.tmpV);
+
+    // --- Herbivores: grow on vegetation, die to predators; migrate (diffuse). ---
+    for (let j = 0; j < h; j++) {
+      for (let i = 0; i < w; i++) {
+        const k = this.idx(i, j);
+        const H = this.herbivore[k]!;
+        const P = this.predator[k]!;
+        const V = this.vegetation[k]!;
+        const dH = H * (H_GROW * V - H_DEATH - H_PRED * P);
+        const migrate = H_MIGRATE * (this.neighborAvg(this.herbivore, i, j) - H);
+        this.tmpH[k] = Math.max(0, Math.min(H_MAX, H + dt * (dH + migrate)));
+      }
+    }
+    // --- Predators: grow on herbivores, die otherwise; migrate toward prey. ---
+    for (let j = 0; j < h; j++) {
+      for (let i = 0; i < w; i++) {
+        const k = this.idx(i, j);
+        const H = this.herbivore[k]!;
+        const P = this.predator[k]!;
+        const dP = P * (P_GROW * H - P_DEATH);
+        const migrate = P_MIGRATE * (this.neighborAvg(this.predator, i, j) - P);
+        this.tmpP[k] = Math.max(0, Math.min(P_MAX, P + dt * (dP + migrate)));
+      }
+    }
+    this.herbivore.set(this.tmpH);
+    this.predator.set(this.tmpP);
   }
 
   /** 4-neighbor average with edge clamping. */
@@ -167,13 +217,37 @@ export class Ecosystem {
   field(name: FieldName): Float32Array {
     if (name === 'vegetation') return this.vegetation;
     if (name === 'moisture') return this.moisture;
+    if (name === 'herbivore') return this.herbivore;
+    if (name === 'predator') return this.predator;
     return this.tempSuit;
   }
 
-  /** Total vegetation (for HUD/legibility). */
-  totalVegetation(): number {
+  private total(f: Float32Array): number {
     let s = 0;
-    for (let k = 0; k < this.vegetation.length; k++) s += this.vegetation[k]!;
+    for (let k = 0; k < f.length; k++) s += f[k]!;
     return s;
+  }
+
+  totalVegetation(): number {
+    return this.total(this.vegetation);
+  }
+  totalHerbivores(): number {
+    return this.total(this.herbivore);
+  }
+  totalPredators(): number {
+    return this.total(this.predator);
+  }
+
+  /** Pick a cell index with probability proportional to a field value (for
+   *  sampled rendering). Returns -1 if the field is empty. `r` ∈ [0,1). */
+  sampleCell(f: Float32Array, r: number): number {
+    const total = this.total(f);
+    if (total <= 1e-6) return -1;
+    let acc = r * total;
+    for (let k = 0; k < f.length; k++) {
+      acc -= f[k]!;
+      if (acc < 0) return k;
+    }
+    return f.length - 1;
   }
 }
