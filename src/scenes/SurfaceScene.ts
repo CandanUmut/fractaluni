@@ -12,6 +12,8 @@ import { SkyDome } from '../render/sky.ts';
 import { Water } from '../render/water.ts';
 import { SurfaceController } from './controls/SurfaceController.ts';
 import { rgbToHex } from '../core/color.ts';
+import { planetPath, loadDiff, saveDiff } from '../sim/persistence.ts';
+import { emptyDiff, cellKeyOf, cellCenter, parseCellKey, type PlanetDiff } from '../sim/planetDiff.ts';
 import { clamp, lerp, DEG2RAD, TAU } from '../core/math.ts';
 import { makeRNG } from '../core/rng.ts';
 import { deriveSeed } from '../core/hash.ts';
@@ -42,6 +44,15 @@ export class SurfaceScene implements AppScene {
   // Floating origin on XZ (Y stays near the ground).
   private originCX = 0;
   private originCZ = 0;
+
+  // v2 Phase A: sparse persistent diff over the pure baseline.
+  private readonly diffKey: string;
+  private diff: PlanetDiff = emptyDiff();
+  private elapsed = 0; // in-world seconds this visit
+  private readonly markerGroup = new THREE.Group();
+  private readonly markerGeo: THREE.CylinderGeometry;
+  private readonly markerMat: THREE.MeshStandardMaterial;
+  private markers: { gx: number; gz: number; mesh: THREE.Mesh }[] = [];
 
   constructor(
     universeSeed: number,
@@ -127,6 +138,25 @@ export class SurfaceScene implements AppScene {
     this.herds = new AnimalHerds(this.planet, this.planet.seed, pal, this.sampler, heightAtLocal);
     this.scene.add(this.herds.group);
 
+    // v2 Phase A: persistent diff. Markers prove the load/apply/save plumbing.
+    this.diffKey = planetPath(universeSeed, cell, starIndex, planetIndex);
+    this.markerGeo = new THREE.CylinderGeometry(0.5, 0.7, 8, 6);
+    this.markerGeo.translate(0, 4, 0);
+    this.markerMat = new THREE.MeshStandardMaterial({
+      color: 0x0a2a30,
+      emissive: new THREE.Color(0x24e0ff),
+      emissiveIntensity: 2.2,
+      flatShading: true,
+    });
+    this.scene.add(this.markerGroup);
+    void loadDiff(this.diffKey).then((d) => {
+      if (d) {
+        this.diff = d;
+        this.elapsed = d.lastVisited;
+      }
+      this.rebuildMarkers();
+    });
+
     // Prime the full view radius synchronously during the descent transition so
     // the surface is fully present on the first rendered frame (no pop-in burst).
     let guard = 0;
@@ -141,10 +171,42 @@ export class SurfaceScene implements AppScene {
     if ((e.key === 'Backspace' || e.key === 't' || e.key === 'T') && this.onTakeOff) {
       e.preventDefault();
       this.onTakeOff();
+    } else if (e.key === 'm' || e.key === 'M') {
+      this.toggleMarker();
     }
   };
 
+  /** Place/remove a persistent marker on the player's current sim cell. */
+  private toggleMarker(): void {
+    const absX = this.originCX * CHUNK_SIZE + this.camera.position.x;
+    const absZ = this.originCZ * CHUNK_SIZE + this.camera.position.z;
+    const key = cellKeyOf(absX, absZ);
+    const existing = this.diff.cells.get(key);
+    if (existing?.marker) this.diff.cells.delete(key);
+    else this.diff.cells.set(key, { ...existing, marker: true });
+    this.rebuildMarkers();
+    this.persist();
+  }
+
+  private rebuildMarkers(): void {
+    for (const m of this.markers) this.markerGroup.remove(m.mesh);
+    this.markers = [];
+    for (const [key, edit] of this.diff.cells) {
+      if (!edit.marker) continue;
+      const [gx, gz] = parseCellKey(key);
+      const mesh = new THREE.Mesh(this.markerGeo, this.markerMat);
+      this.markerGroup.add(mesh);
+      this.markers.push({ gx, gz, mesh });
+    }
+  }
+
+  private persist(): void {
+    this.diff.lastVisited = this.elapsed;
+    void saveDiff(this.diffKey, this.diff);
+  }
+
   update(dt: number): void {
+    this.elapsed += dt;
     this.controller.update(dt);
 
     // Floating-origin recenter on XZ (whole chunks).
@@ -166,6 +228,14 @@ export class SurfaceScene implements AppScene {
     this.herds.update(dt, this.camera.position);
     this.sky.follow(this.camera.position);
     if (this.water) this.water.update(dt, this.camera.position, this.sampler.seaLevel);
+
+    // Keep persistent markers positioned in local space over the floating origin.
+    for (const m of this.markers) {
+      const [cxw, czw] = cellCenter(m.gx, m.gz);
+      const lx = cxw - this.originCX * CHUNK_SIZE;
+      const lz = czw - this.originCZ * CHUNK_SIZE;
+      m.mesh.position.set(lx, this.sampler.heightAt(cxw, czw), lz);
+    }
   }
 
   resize(width: number, height: number): void {
@@ -174,6 +244,9 @@ export class SurfaceScene implements AppScene {
   }
 
   dispose(): void {
+    this.persist(); // save the diff when leaving the planet
+    this.markerGeo.dispose();
+    this.markerMat.dispose();
     window.removeEventListener('keydown', this.onKeyDown);
     this.controller.dispose();
     this.chunks.dispose();
@@ -192,6 +265,7 @@ export class SurfaceScene implements AppScene {
       `star ${s.spectralClass} ${s.temperature.toFixed(0)}K · orbit ${p.orbitalRadius.toFixed(2)} AU`,
       `T_surf ${p.surfaceTemp.toFixed(0)}K · gravity ${p.gravity.toFixed(2)}g · water ${p.waterFraction.toFixed(2)} · atmo ${p.atmosphere.toFixed(2)}`,
       `mode: ${this.controller.mode}  (G to toggle walk/fly)`,
+      `markers: ${this.markers.length}  ([M] mark this spot — persists across visits)`,
     ];
     if (!this.controller.isLocked) {
       lines.push('click to capture mouse · WASD move · Space jump/up · Shift sprint/boost');
