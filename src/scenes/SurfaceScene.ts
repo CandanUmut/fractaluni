@@ -13,11 +13,16 @@ import { Water } from '../render/water.ts';
 import { SurfaceController } from './controls/SurfaceController.ts';
 import { rgbToHex } from '../core/color.ts';
 import { planetPath, loadDiff, saveDiff } from '../sim/persistence.ts';
-import { emptyDiff, cellKeyOf, cellCenter, parseCellKey, type PlanetDiff } from '../sim/planetDiff.ts';
+import { emptyDiff, cellKeyOf, cellCenter, parseCellKey, SIM_CELL, type PlanetDiff } from '../sim/planetDiff.ts';
+import { Ecosystem } from '../sim/ecosystem.ts';
+import { FieldOverlay } from '../ui/fieldOverlay.ts';
 import { clamp, lerp, DEG2RAD, TAU } from '../core/math.ts';
 import { makeRNG } from '../core/rng.ts';
 import { deriveSeed } from '../core/hash.ts';
 import type { PlanetProfile, StarProfile } from '../universe/types.ts';
+
+const SIM_DT = 0.1; // sim-seconds per fixed ecosystem tick
+const MAX_STEPS_PER_FRAME = 40; // cap so fast-forward never stalls a frame
 
 /** Walkable, infinitely-streamed planet surface. Chunked fBm terrain, water at
  *  sea level, gradient sky + colored sun, biome fog. Floating origin (XZ) keeps
@@ -53,6 +58,13 @@ export class SurfaceScene implements AppScene {
   private readonly markerGeo: THREE.CylinderGeometry;
   private readonly markerMat: THREE.MeshStandardMaterial;
   private markers: { gx: number; gz: number; mesh: THREE.Mesh }[] = [];
+
+  // v2 Phase B: local ecosystem field sim + time controls + debug overlay.
+  private readonly eco: Ecosystem;
+  private readonly overlay: FieldOverlay;
+  private simAccum = 0;
+  private timeScale = 1;
+  private paused = false;
 
   constructor(
     universeSeed: number,
@@ -157,6 +169,23 @@ export class SurfaceScene implements AppScene {
       this.rebuildMarkers();
     });
 
+    // Ecosystem field sim over a fixed region centered on the spawn point.
+    const GRID = 96;
+    this.eco = new Ecosystem({
+      width: GRID,
+      height: GRID,
+      originGX: -GRID / 2,
+      originGZ: -GRID / 2,
+      elevationAt: (x, z) => this.sampler.heightAt(x, z),
+      seaLevel: this.sampler.seaLevel,
+      hasWater: this.sampler.hasWater,
+      surfaceTemp: this.planet.surfaceTemp,
+      atmosphere: this.planet.atmosphere,
+      waterFraction: this.planet.waterFraction,
+    });
+    const hudRoot = document.getElementById('hud') ?? document.body;
+    this.overlay = new FieldOverlay(hudRoot, GRID, GRID);
+
     // Prime the full view radius synchronously during the descent transition so
     // the surface is fully present on the first rendered frame (no pop-in burst).
     let guard = 0;
@@ -173,6 +202,16 @@ export class SurfaceScene implements AppScene {
       this.onTakeOff();
     } else if (e.key === 'm' || e.key === 'M') {
       this.toggleMarker();
+    } else if (e.key === 'k' || e.key === 'K') {
+      this.paused = !this.paused;
+    } else if (e.key === 'l' || e.key === 'L') {
+      this.timeScale = this.timeScale >= 16 ? 1 : this.timeScale * 4; // 1→4→16→1
+    } else if (e.key === 'j' || e.key === 'J') {
+      for (let i = 0; i < 200; i++) this.eco.step(SIM_DT); // skip ahead ~20s
+    } else if (e.key === 'o' || e.key === 'O') {
+      this.overlay.setVisible(!this.overlay.visible);
+    } else if (e.key === 'i' || e.key === 'I') {
+      this.overlay.cycle();
     }
   };
 
@@ -236,6 +275,23 @@ export class SurfaceScene implements AppScene {
       const lz = czw - this.originCZ * CHUNK_SIZE;
       m.mesh.position.set(lx, this.sampler.heightAt(cxw, czw), lz);
     }
+
+    // Ecosystem field sim on a fixed timestep, scaled by the time control.
+    if (!this.paused) {
+      this.simAccum += dt * this.timeScale;
+      let steps = 0;
+      while (this.simAccum >= SIM_DT && steps < MAX_STEPS_PER_FRAME) {
+        this.eco.step(SIM_DT);
+        this.simAccum -= SIM_DT;
+        steps++;
+      }
+    }
+    // Debug overlay (player cell relative to the sim grid origin).
+    const absX = this.originCX * CHUNK_SIZE + this.camera.position.x;
+    const absZ = this.originCZ * CHUNK_SIZE + this.camera.position.z;
+    const pi = Math.floor(absX / SIM_CELL) - this.eco.originGX;
+    const pj = Math.floor(absZ / SIM_CELL) - this.eco.originGZ;
+    this.overlay.render(this.eco, pi, pj);
   }
 
   resize(width: number, height: number): void {
@@ -245,6 +301,7 @@ export class SurfaceScene implements AppScene {
 
   dispose(): void {
     this.persist(); // save the diff when leaving the planet
+    this.overlay.dispose();
     this.markerGeo.dispose();
     this.markerMat.dispose();
     window.removeEventListener('keydown', this.onKeyDown);
@@ -266,6 +323,8 @@ export class SurfaceScene implements AppScene {
       `T_surf ${p.surfaceTemp.toFixed(0)}K · gravity ${p.gravity.toFixed(2)}g · water ${p.waterFraction.toFixed(2)} · atmo ${p.atmosphere.toFixed(2)}`,
       `mode: ${this.controller.mode}  (G to toggle walk/fly)`,
       `markers: ${this.markers.length}  ([M] mark this spot — persists across visits)`,
+      `sim: ${this.paused ? 'paused' : `▶ ${this.timeScale}×`}  veg ${this.eco.totalVegetation().toFixed(0)}  · [K] pause [L] speed [J] skip`,
+      `overlay: ${this.overlay.visible ? this.overlay.field : 'off'}  · [O] toggle [I] field`,
     ];
     if (!this.controller.isLocked) {
       lines.push('click to capture mouse · WASD move · Space jump/up · Shift sprint/boost');
