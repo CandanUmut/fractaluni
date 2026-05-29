@@ -16,6 +16,7 @@ import { planetPath, loadDiff, saveDiff } from '../sim/persistence.ts';
 import { emptyDiff, cellKeyOf, cellCenter, parseCellKey, SIM_CELL, type PlanetDiff } from '../sim/planetDiff.ts';
 import { Ecosystem } from '../sim/ecosystem.ts';
 import { DynamicFlora } from '../gen/dynamicFlora.ts';
+import { Survival } from '../sim/survival.ts';
 import { FieldOverlay } from '../ui/fieldOverlay.ts';
 import type { CellEdit } from '../sim/planetDiff.ts';
 import { clamp, lerp, DEG2RAD, TAU } from '../core/math.ts';
@@ -73,6 +74,11 @@ export class SurfaceScene implements AppScene {
   private seeds = 3;
   private samples = 2;
   private lastAction = '';
+
+  // v2 Phase E: light survival.
+  private readonly survival: Survival;
+  private prevX = 0;
+  private prevZ = 0;
 
   constructor(
     universeSeed: number,
@@ -198,6 +204,8 @@ export class SurfaceScene implements AppScene {
     this.dynamicFlora = new DynamicFlora(this.planet.seed, pal, this.sampler);
     this.scene.add(this.dynamicFlora.group);
 
+    this.survival = new Survival(this.planet);
+
     // Prime the full view radius synchronously during the descent transition so
     // the surface is fully present on the first rendered frame (no pop-in burst).
     let guard = 0;
@@ -236,8 +244,45 @@ export class SurfaceScene implements AppScene {
       this.act('herb');
     } else if (e.key === 'y' || e.key === 'Y') {
       this.act('pred');
+    } else if (e.key === 'e' || e.key === 'E') {
+      this.eat();
     }
   };
+
+  /** Eat: hunt a local herd, or forage local vegetation — consumes the field. */
+  private eat(): void {
+    const c = this.playerGridCell();
+    if (!c) {
+      this.lastAction = 'out of the simulated region';
+      return;
+    }
+    const n = this.survival.needs;
+    if (this.eco.herbivore[c.k]! > 0.5) {
+      this.eco.herbivore[c.k] = Math.max(0, this.eco.herbivore[c.k]! - 1.5);
+      n.food = Math.min(1, n.food + 0.45);
+      n.energy = Math.min(1, n.energy + 0.15);
+      this.lastAction = 'hunted a herbivore — well fed';
+    } else if (this.eco.vegetation[c.k]! > 0.2) {
+      this.eco.vegetation[c.k] = Math.max(0, this.eco.vegetation[c.k]! - 0.3);
+      n.food = Math.min(1, n.food + 0.28);
+      this.lastAction = 'foraged some vegetation';
+    } else {
+      this.lastAction = 'nothing here to eat — grow or find food';
+    }
+  }
+
+  private respawn(): void {
+    this.camera.position.set(0, 0, 0);
+    this.originCX = 0;
+    this.originCZ = 0;
+    this.controller.placeOnGround();
+    this.survival.revive();
+    this.seeds = Math.floor(this.seeds / 2);
+    this.samples = Math.floor(this.samples / 2);
+    this.prevX = 0;
+    this.prevZ = 0;
+    this.lastAction = 'You blacked out and woke at your landing site.';
+  }
 
   private playerGridCell(): { i: number; j: number; k: number; gx: number; gz: number } | null {
     const absX = this.originCX * CHUNK_SIZE + this.camera.position.x;
@@ -385,6 +430,9 @@ export class SurfaceScene implements AppScene {
       this.originCZ += sz;
       // Keep ambient birds in place relative to the world after the shift.
       this.birds?.shift(sx * CHUNK_SIZE, sz * CHUNK_SIZE);
+      // Keep the movement baseline in the same frame as the camera.
+      this.prevX -= sx * CHUNK_SIZE;
+      this.prevZ -= sz * CHUNK_SIZE;
     }
 
     this.chunks.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
@@ -414,6 +462,16 @@ export class SurfaceScene implements AppScene {
     // Render the population + vegetation fields as visible samples.
     this.herds.update(dt, this.eco, this.originCX, this.originCZ);
     this.dynamicFlora.update(dt, this.eco, this.originCX, this.originCZ);
+
+    // Survival: tick needs from local context; instructive failure on death.
+    const pc = this.playerGridCell();
+    const localVeg = pc ? this.eco.vegetation[pc.k]! : 0;
+    const moved = Math.hypot(this.camera.position.x - this.prevX, this.camera.position.z - this.prevZ) > dt * 1.5;
+    this.prevX = this.camera.position.x;
+    this.prevZ = this.camera.position.z;
+    if (this.survival.update(dt, { moving: moved, localVegetation: localVeg })) {
+      this.respawn();
+    }
     // Debug overlay (player cell relative to the sim grid origin).
     const absX = this.originCX * CHUNK_SIZE + this.camera.position.x;
     const absZ = this.originCZ * CHUNK_SIZE + this.camera.position.z;
@@ -446,6 +504,12 @@ export class SurfaceScene implements AppScene {
   hudLines(): string[] {
     const p = this.planet;
     const s = this.star;
+    const n = this.survival.needs;
+    const haz = this.survival.hazardLabel;
+    const bar = (v: number): string => {
+      const f = Math.round(Math.max(0, Math.min(1, v)) * 5);
+      return '█'.repeat(f) + '░'.repeat(5 - f);
+    };
     const lines = [
       `scene: surface — ${p.biome}${p.inHabitableZone ? ' (habitable zone)' : ''}`,
       `star ${s.spectralClass} ${s.temperature.toFixed(0)}K · orbit ${p.orbitalRadius.toFixed(2)} AU`,
@@ -455,6 +519,7 @@ export class SurfaceScene implements AppScene {
       `sim: ${this.paused ? 'paused' : `▶ ${this.timeScale}×`}  veg ${this.eco.totalVegetation().toFixed(0)} · herb ${this.eco.totalHerbivores().toFixed(0)} · pred ${this.eco.totalPredators().toFixed(0)}`,
       `[K] pause [L] speed [J] skip · overlay: ${this.overlay.visible ? this.overlay.field : 'off'} ([O] toggle [I] field)`,
       `seeds ${this.seeds} · samples ${this.samples} — [X] gather [F] plant [C] clear [V] water [H] herbivores [Y] predators`,
+      `energy ${bar(n.energy)} warmth ${bar(n.warmth)} food ${bar(n.food)} vitality ${bar(n.vitality)} — [E] eat${haz ? `  ⚠ ${haz}` : ''}`,
       ...(this.lastAction ? [`» ${this.lastAction}`] : []),
     ];
     if (!this.controller.isLocked) {
