@@ -40,6 +40,14 @@ export class SurfaceController {
   private moving = false;
   private sprinting = false;
   private jetpacking = false;
+  private landingImpact = 0; // downward speed at the moment of touchdown
+
+  /** Returns (and clears) the impact speed of a just-completed landing, or 0. */
+  consumeLanding(): number {
+    const v = this.landingImpact;
+    this.landingImpact = 0;
+    return v;
+  }
 
   private readonly euler = new THREE.Euler(0, 0, 0, 'YXZ');
   private readonly fwd = new THREE.Vector3();
@@ -183,6 +191,7 @@ export class SurfaceController {
     const groundY = this.heightAtLocal(this.camera.position.x, this.camera.position.z) + this.eyeHeight;
     this.jetpacking = false;
     if (this.camera.position.y <= groundY) {
+      if (!this.onGround && this.vy < 0) this.landingImpact = Math.max(this.landingImpact, -this.vy);
       this.camera.position.y = groundY;
       this.vy = 0;
       this.onGround = true;

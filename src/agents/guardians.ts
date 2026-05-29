@@ -20,6 +20,7 @@ const ATTACK_RANGE = 4.5;
 const SPEED = 10;
 const ATTACK_DMG = 14;
 const ATTACK_CD = 1.2;
+const WINDUP = 0.4; // telegraph time before a strike lands
 
 export interface Guardian {
   key: string;
@@ -31,6 +32,8 @@ export interface Guardian {
   maxHealth: number;
   heading: number;
   attackCd: number;
+  windupT: number;
+  pendingStrike: boolean;
   flash: number;
   lootType: ResourceType;
   lootAmount: number;
@@ -40,8 +43,8 @@ export interface Guardian {
 
 export class GuardianManager {
   readonly group = new THREE.Group();
-  /** Drain the player's energy when a guardian lands a hit. */
-  onAttack: (dmg: number) => void = () => {};
+  /** Drain the player's energy when a guardian lands a hit (atLocal = strike pos). */
+  onAttack: (dmg: number, atLocal: THREE.Vector3) => void = () => {};
   /** Award loot when a guardian dies. */
   onKill: (type: ResourceType, amount: number, atX: number, atZ: number) => void = () => {};
 
@@ -112,6 +115,8 @@ export class GuardianManager {
       maxHealth: type.tier === 'exotic' ? 95 : 55,
       heading: rng() * Math.PI * 2,
       attackCd: 0,
+      windupT: 0,
+      pendingStrike: false,
       flash: 0,
       lootType: type,
       lootAmount: type.tier === 'exotic' ? 9 : 5,
@@ -143,10 +148,20 @@ export class GuardianManager {
       if (pdist < AGGRO) {
         tx = dpx;
         tz = dpz; // chase the player
-        if (pdist < ATTACK_RANGE && g.attackCd <= 0) {
-          g.attackCd = ATTACK_CD;
-          g.flash = 0.25;
-          this.onAttack(ATTACK_DMG);
+        if (g.pendingStrike) {
+          // Telegraphed wind-up: hold position, then strike.
+          g.windupT -= dt;
+          tx = 0;
+          tz = 0;
+          if (g.windupT <= 0) {
+            g.pendingStrike = false;
+            g.attackCd = ATTACK_CD;
+            g.flash = 0.25;
+            this.onAttack(ATTACK_DMG, g.mesh.position);
+          }
+        } else if (pdist < ATTACK_RANGE && g.attackCd <= 0) {
+          g.pendingStrike = true;
+          g.windupT = WINDUP;
         }
       } else {
         tx = g.homeX - g.ax;
@@ -162,12 +177,13 @@ export class GuardianManager {
       }
 
       const gy = this.sampler.heightAt(g.ax, g.az);
-      const lunge = g.flash > 0 ? Math.sin(g.flash * 12) * 0.3 : 0;
-      g.mesh.position.set(g.ax - originCX * CHUNK_SIZE, gy + lunge, g.az - originCZ * CHUNK_SIZE);
-      g.mesh.rotation.set(0, g.heading, 0);
-      const f = g.flash > 0 ? 1.15 : 1;
-      g.mesh.scale.setScalar((g.lootType.tier === 'exotic' ? 2.4 : 1.9) * f);
-      g.mat.emissive.setRGB(g.flash, 0, 0);
+      const wind = g.pendingStrike ? 1 - g.windupT / WINDUP : 0; // 0→1 rear-back
+      const lift = (g.flash > 0 ? Math.sin(g.flash * 12) * 0.3 : 0) + wind * 0.5;
+      g.mesh.position.set(g.ax - originCX * CHUNK_SIZE, gy + lift, g.az - originCZ * CHUNK_SIZE);
+      g.mesh.rotation.set(wind * -0.4, g.heading, 0); // rear up as it winds up
+      const base = g.lootType.tier === 'exotic' ? 2.4 : 1.9;
+      g.mesh.scale.setScalar(base * (1 + g.flash * 0.15 + wind * 0.3));
+      g.mat.emissive.setRGB(Math.max(g.flash, wind * 0.7), 0, 0);
     }
   }
 

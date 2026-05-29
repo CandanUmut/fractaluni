@@ -25,6 +25,7 @@ import { Markers, type MarkerSpec } from '../ui/markers.ts';
 import { SurfaceHud } from '../ui/surfaceHud.ts';
 import { Objectives } from '../ui/objectives.ts';
 import { progression, energyMaxFor, cargoCapFor, scanRangeFor, gunDamageFor, drillTierFor, saveProgression } from '../sim/progression.ts';
+import { settings } from '../ui/settings.ts';
 import { makeWeapons, type HeldItem, type WeaponCtx, type RayHit } from '../weapons/items.ts';
 import { audio } from '../audio/audio.ts';
 import { SurfaceController } from './controls/SurfaceController.ts';
@@ -91,6 +92,11 @@ export class SurfaceScene implements AppScene {
   private nearShip = false;
   private lastMsg = '';
   private pickupT = 0;
+  // Movement-feel timers + scratch.
+  private stepT = 0;
+  private jetT = 0;
+  private readonly rightV = new THREE.Vector3();
+  private readonly feet = new THREE.Vector3();
 
   // v3 Phase D/E: guardians + non-lethal energy.
   private readonly guardians: GuardianManager;
@@ -251,16 +257,17 @@ export class SurfaceScene implements AppScene {
     // Guardians defend valuable deposits.
     this.guardians = new GuardianManager(this.planet.seed, this.sampler, this.diff, this.nodes.resourcePalette, pal);
     this.scene.add(this.guardians.group);
-    this.guardians.onAttack = (dmg) => {
+    this.guardians.onAttack = (dmg, at) => {
       this.energy = Math.max(0, this.energy - dmg);
       this.hitFlash = 0.4;
       this.lastMsg = `⚠ hit! energy −${dmg}`;
+      audio.play('hurt', 0.8);
+      audio.play('attack', 0.7, this.panFor(at));
     };
     this.guardians.onKill = (type, amount, x, z) => {
       this.collect(type, amount, false);
       this.markers.showBanner(`GUARDIAN DOWN  ·  +${amount} ${type.name}`);
-      void x;
-      void z;
+      audio.play('death', 0.8, this.panFor(this.feet.set(x, 0, z)));
     };
 
     void loadDiff(this.diffKey).then((d) => {
@@ -384,9 +391,20 @@ export class SurfaceScene implements AppScene {
 
   private onPointerDown = (e: PointerEvent): void => {
     audio.init(); // unlock + load audio on first user gesture
+    audio.startAmbient();
     if (document.pointerLockElement !== this.dom || e.button !== 0) return;
     this.current.primaryDown(this.buildCtx());
   };
+
+  /** Stereo pan [-1,1] for a sound at a local position, from camera-relative angle. */
+  private panFor(localPos: THREE.Vector3): number {
+    this.camera.getWorldDirection(this.aimDir);
+    this.rightV.crossVectors(this.aimDir, this.camera.up).normalize();
+    const dx = localPos.x - this.camera.position.x;
+    const dz = localPos.z - this.camera.position.z;
+    const len = Math.hypot(dx, dz) || 1;
+    return clamp((this.rightV.x * dx + this.rightV.z * dz) / len, -1, 1);
+  }
   private onPointerUp = (e: PointerEvent): void => {
     if (e.button === 0) this.current.primaryUp(this.buildCtx());
   };
@@ -558,6 +576,38 @@ export class SurfaceScene implements AppScene {
     }
     if (this.terminal.visible) this.terminal.setSellValue(this.cargoValue());
 
+    // --- Movement feel ---
+    // FOV kick on sprint/jetpack.
+    const targetFov = settings.fov + (this.controller.isSprinting ? 6 : 0) + (this.controller.isJetpacking ? 4 : 0);
+    this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-dt * 8));
+    this.camera.updateProjectionMatrix();
+    // Footsteps.
+    this.stepT -= dt;
+    if (this.controller.isMoving && !this.controller.airborne) {
+      if (this.stepT <= 0) {
+        this.stepT = this.controller.isSprinting ? 0.3 : 0.46;
+        audio.play('step', 0.35);
+      }
+    } else {
+      this.stepT = Math.min(this.stepT, 0.12);
+    }
+    // Jetpack exhaust + sound.
+    if (this.controller.isJetpacking) {
+      this.feet.copy(this.camera.position).y -= 1.4;
+      this.effects.burst(this.feet, new THREE.Color(0x8fd6ff), 4, 5, 0.3, -3, 4);
+      this.jetT -= dt;
+      if (this.jetT <= 0) {
+        this.jetT = 0.16;
+        audio.play('jet', 0.22);
+      }
+    }
+    // Landing thud.
+    const impact = this.controller.consumeLanding();
+    if (impact > 6) {
+      audio.play('land', clamp(impact / 16, 0.3, 1));
+      this.effects.addShake(clamp(impact * 0.004, 0, 0.08));
+    }
+
     // World-space markers over deposits + guardians (hidden in the menu).
     const specs: MarkerSpec[] = [];
     if (!this.terminal.visible) {
@@ -664,6 +714,7 @@ export class SurfaceScene implements AppScene {
     window.removeEventListener('pagehide', this.onPageHide);
     saveDiff(this.diffKey, this.diff); // persist depletion on leave
     audio.stopLoop();
+    audio.stopAmbient();
     for (const w of this.weapons) w.dispose();
     this.effects.dispose();
     saveProgression();
