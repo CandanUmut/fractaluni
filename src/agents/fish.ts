@@ -16,6 +16,8 @@ interface Fish {
   turn: number;
   speed: number;
   depth: number; // preferred fraction of the water column
+  dying: number; // >0 while floating belly-up to the surface after a hit
+  dead: boolean;
 }
 
 function fishGeometry(body: RGB): THREE.BufferGeometry {
@@ -69,6 +71,8 @@ export class FishSchool {
   private readonly dummy = new THREE.Object3D();
   private readonly q = new THREE.Quaternion();
   private readonly fwd = new THREE.Vector3();
+  /** Maps a rendered instance slot back to its index in `this.fish`. */
+  private readonly slotToFish: number[] = [];
 
   constructor(seed: number, count: number, color: RGB, seaLevel: number, heightAtLocal: (x: number, z: number) => number) {
     this.seaLevel = seaLevel;
@@ -88,6 +92,8 @@ export class FishSchool {
         turn: 0,
         speed: 3 + rng() * 4,
         depth: 0.3 + rng() * 0.5,
+        dying: 0,
+        dead: false,
       });
     }
   }
@@ -99,9 +105,36 @@ export class FishSchool {
     }
   }
 
+  /** Shoot the fish in rendered slot `instanceId`: it floats up and vanishes.
+   *  Returns its local position for impact FX, or null if the slot is empty. */
+  hit(instanceId: number): THREE.Vector3 | null {
+    const fi = this.slotToFish[instanceId];
+    if (fi === undefined) return null;
+    const f = this.fish[fi];
+    if (!f || f.dead || f.dying > 0) return null;
+    f.dying = 1.6;
+    return new THREE.Vector3(f.x, f.y, f.z);
+  }
+
   update(dt: number, playerLocal: THREE.Vector3): void {
     let count = 0;
-    for (const f of this.fish) {
+    this.slotToFish.length = 0;
+    for (let fi = 0; fi < this.fish.length; fi++) {
+      const f = this.fish[fi]!;
+      if (f.dead) continue;
+      if (f.dying > 0) {
+        f.dying -= dt;
+        f.y += dt * 1.4; // drift up toward the surface
+        if (f.dying <= 0 || f.y >= this.seaLevel - 0.2) f.dead = true;
+        this.q.setFromEuler(new THREE.Euler(Math.PI, f.heading, 0)); // belly-up
+        this.dummy.position.set(f.x, Math.min(f.y, this.seaLevel - 0.2), f.z);
+        this.dummy.quaternion.copy(this.q);
+        this.dummy.scale.setScalar(1);
+        this.dummy.updateMatrix();
+        this.slotToFish[count] = fi;
+        this.mesh.setMatrixAt(count++, this.dummy.matrix);
+        continue;
+      }
       f.turn += (Math.random() - 0.5) * dt * 3;
       f.turn *= 0.9;
       f.heading += f.turn * dt;
@@ -132,6 +165,7 @@ export class FishSchool {
       this.dummy.quaternion.copy(this.q);
       this.dummy.scale.setScalar(1);
       this.dummy.updateMatrix();
+      this.slotToFish[count] = fi;
       this.mesh.setMatrixAt(count++, this.dummy.matrix);
     }
     this.mesh.count = count;

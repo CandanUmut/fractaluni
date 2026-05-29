@@ -15,6 +15,9 @@ const MAX_FLAP = 0.9;
 interface Boid {
   pos: THREE.Vector3;
   vel: THREE.Vector3;
+  /** >0 while the bird is shot and tumbling out of the sky, counting down to removal. */
+  dying: number;
+  dead: boolean;
 }
 
 /** Build a small bird: two wing triangles + a body sliver, with per-vertex
@@ -101,6 +104,7 @@ export class BirdFlock {
   private readonly dummy = new THREE.Object3D();
   private readonly q = new THREE.Quaternion();
   private readonly fwd = new THREE.Vector3(0, 0, 1);
+  private readonly eTmp = new THREE.Euler();
 
   // tuning
   private readonly perception = 14;
@@ -124,6 +128,8 @@ export class BirdFlock {
           (rng() - 0.5) * this.bounds,
         ),
         vel: new THREE.Vector3((rng() - 0.5) * 10, (rng() - 0.5) * 4, (rng() - 0.5) * 10),
+        dying: 0,
+        dead: false,
       });
     }
 
@@ -165,6 +171,30 @@ export class BirdFlock {
 
     for (let i = 0; i < this.boids.length; i++) {
       const b = this.boids[i]!;
+
+      // Shot birds: tumble out of the sky under gravity, then vanish.
+      if (b.dead) {
+        this.dummy.scale.setScalar(0);
+        this.dummy.position.set(0, -1e4, 0);
+        this.dummy.updateMatrix();
+        this.mesh.setMatrixAt(i, this.dummy.matrix);
+        continue;
+      }
+      if (b.dying > 0) {
+        b.dying -= dt;
+        b.vel.y -= 34 * dt;
+        b.pos.addScaledVector(b.vel, dt);
+        const ground = this.heightAtLocal(b.pos.x, b.pos.z);
+        if (b.pos.y <= ground + 0.3 || b.dying <= 0) b.dead = true;
+        this.eTmp.set(b.dying * 9, b.dying * 6, b.dying * 7);
+        this.dummy.position.copy(b.pos);
+        this.dummy.quaternion.setFromEuler(this.eTmp);
+        this.dummy.scale.setScalar(this.bodyScale);
+        this.dummy.updateMatrix();
+        this.mesh.setMatrixAt(i, this.dummy.matrix);
+        continue;
+      }
+
       this.sep.set(0, 0, 0);
       this.ali.set(0, 0, 0);
       this.coh.set(0, 0, 0);
@@ -173,6 +203,7 @@ export class BirdFlock {
       for (let j = 0; j < this.boids.length; j++) {
         if (i === j) continue;
         const o = this.boids[j]!;
+        if (o.dead || o.dying > 0) continue;
         const d = b.pos.distanceTo(o.pos);
         if (d < this.perception) {
           this.ali.add(o.vel);
@@ -227,6 +258,25 @@ export class BirdFlock {
       this.mesh.setMatrixAt(i, this.dummy.matrix);
     }
     this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Shoot the bird at `instanceId`: it tumbles down and its flock scatters.
+   *  Returns its current local position (for impact FX) or null if already gone. */
+  hit(instanceId: number): THREE.Vector3 | null {
+    const b = this.boids[instanceId];
+    if (!b || b.dead || b.dying > 0) return null;
+    b.dying = 2.4;
+    b.vel.set((Math.random() - 0.5) * 6, -3, (Math.random() - 0.5) * 6);
+    // Neighbours bolt away from the shot.
+    for (const o of this.boids) {
+      if (o === b || o.dead || o.dying > 0) continue;
+      const d = o.pos.distanceTo(b.pos);
+      if (d < 45 && d > 1e-3) {
+        this.tmp.copy(o.pos).sub(b.pos).multiplyScalar((45 - d) * 1.6 / d);
+        o.vel.add(this.tmp);
+      }
+    }
+    return b.pos.clone();
   }
 
   private steer(target: THREE.Vector3, vel: THREE.Vector3, acc: THREE.Vector3, weight: number): void {

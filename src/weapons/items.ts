@@ -11,6 +11,8 @@ export interface RayHit {
   normal: THREE.Vector3;
   distance: number;
   object: THREE.Object3D | null;
+  /** Set when the struck object is an InstancedMesh (creature/plant/etc.). */
+  instanceId?: number;
 }
 
 export interface WeaponCtx {

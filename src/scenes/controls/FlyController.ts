@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { settings } from '../../ui/settings.ts';
+import { touch } from '../../ui/touchControls.ts';
 
 // Quaternion-based 6DOF free-fly controller. Pointer-lock mouse look (yaw+pitch
 // in the camera's local frame, so there's no gimbal lock), Q/E roll, WASD +
@@ -55,8 +56,23 @@ export class FlyController {
   }
 
   private onClick = (): void => {
+    if (touch.enabled) return; // mobile uses on-screen look, not pointer lock
     if (this.enabled && !this.locked) this.dom.requestPointerLock();
   };
+
+  /** Apply accumulated touch-drag look to the camera quaternion. */
+  private applyTouchLook(): void {
+    if (!touch.enabled || (touch.lookDX === 0 && touch.lookDY === 0)) return;
+    this.up.set(0, 1, 0).applyQuaternion(this.target.quaternion);
+    this.right.set(1, 0, 0).applyQuaternion(this.target.quaternion);
+    const sens = this.lookSensitivity * settings.sensitivity * 1.6;
+    this.qYaw.setFromAxisAngle(this.up, -touch.lookDX * sens);
+    this.qPitch.setFromAxisAngle(this.right, -touch.lookDY * sens);
+    this.target.quaternion.premultiply(this.qYaw).premultiply(this.qPitch).normalize();
+    this.yawInput += touch.lookDX;
+    touch.lookDX = 0;
+    touch.lookDY = 0;
+  }
 
   private onLockChange = (): void => {
     this.locked = document.pointerLockElement === this.dom;
@@ -106,11 +122,14 @@ export class FlyController {
   }
 
   get isWarping(): boolean {
-    return this.warp && this.velocity.lengthSq() > 1;
+    return (this.warp || (touch.enabled && touch.warp)) && this.velocity.lengthSq() > 1;
   }
 
   update(dt: number): void {
     if (!this.enabled) return;
+
+    this.applyTouchLook();
+    const warp = this.warp || (touch.enabled && touch.warp);
 
     // Roll (always available; doesn't need pointer lock).
     let roll = 0;
@@ -130,8 +149,14 @@ export class FlyController {
     if (this.any(KEYS.right)) this.move.x += 1;
     if (this.any(KEYS.up)) this.move.y += 1;
     if (this.any(KEYS.down)) this.move.y -= 1;
+    if (touch.enabled) {
+      if (Math.abs(touch.move.y) > 0.04) this.move.z -= touch.move.y; // stick up = forward
+      if (Math.abs(touch.move.x) > 0.04) this.move.x += touch.move.x;
+      if (touch.jump) this.move.y += 1;
+      if (touch.descend) this.move.y -= 1;
+    }
 
-    const speed = this.baseSpeed * (this.warp ? this.warpMultiplier : 1);
+    const speed = this.baseSpeed * (warp ? this.warpMultiplier : 1);
     if (this.move.lengthSq() > 0) {
       this.move.normalize().applyQuaternion(this.target.quaternion).multiplyScalar(speed);
     }
