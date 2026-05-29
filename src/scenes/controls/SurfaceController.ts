@@ -12,10 +12,12 @@ export class SurfaceController {
   enabled = true;
   mode: MoveMode = 'walk';
   eyeHeight = 2.6;
-  walkSpeed = 22;
+  walkSpeed = 14;
   flySpeed = 70;
   gravity = -32;
-  jumpSpeed = 14;
+  jumpSpeed = 13;
+  jetpackAccel = 40; // upward thrust while holding jump in the air
+  jetpackMaxRise = 16;
   lookSensitivity = 0.0022;
 
   private readonly camera: THREE.PerspectiveCamera;
@@ -28,6 +30,12 @@ export class SurfaceController {
   private locked = false;
   private vy = 0;
   private onGround = false;
+  // Smoothed recent look delta → viewmodel sway.
+  private swayX = 0;
+  private swayY = 0;
+  private moving = false;
+  private sprinting = false;
+  private jetpacking = false;
 
   private readonly euler = new THREE.Euler(0, 0, 0, 'YXZ');
   private readonly fwd = new THREE.Vector3();
@@ -69,7 +77,29 @@ export class SurfaceController {
     this.yaw -= e.movementX * this.lookSensitivity;
     this.pitch -= e.movementY * this.lookSensitivity;
     this.pitch = clamp(this.pitch, -1.5, 1.5);
+    this.swayX += e.movementX;
+    this.swayY += e.movementY;
   };
+
+  get sway(): { x: number; y: number } {
+    return { x: this.swayX, y: this.swayY };
+  }
+  get isMoving(): boolean {
+    return this.moving;
+  }
+  get isSprinting(): boolean {
+    return this.sprinting;
+  }
+  get isJetpacking(): boolean {
+    return this.jetpacking;
+  }
+  get airborne(): boolean {
+    return !this.onGround;
+  }
+  /** Forward speed fraction for viewmodel bob [0,1]. */
+  get speed01(): number {
+    return this.moving ? (this.sprinting ? 1 : 0.55) : 0;
+  }
 
   private onKeyDown = (e: KeyboardEvent): void => {
     this.pressed.add(e.key.toLowerCase());
@@ -99,11 +129,16 @@ export class SurfaceController {
     this.camera.quaternion.setFromEuler(this.euler);
 
     const sprint = this.k('shift');
+    this.sprinting = sprint && this.moving;
     if (this.mode === 'fly') {
       this.updateFly(dt, sprint);
     } else {
       this.updateWalk(dt, sprint);
     }
+
+    // Decay viewmodel sway toward rest.
+    this.swayX *= Math.exp(-dt * 8);
+    this.swayY *= Math.exp(-dt * 8);
   }
 
   private updateFly(dt: number, boost: boolean): void {
@@ -116,8 +151,9 @@ export class SurfaceController {
     if (this.k('a')) this.move.addScaledVector(this.right, -1);
     if (this.k(' ')) this.move.y += 1;
     if (this.k('control')) this.move.y -= 1;
+    this.moving = this.move.lengthSq() > 0;
     const speed = this.flySpeed * (boost ? 4 : 1);
-    if (this.move.lengthSq() > 0) this.move.normalize().multiplyScalar(speed * dt);
+    if (this.moving) this.move.normalize().multiplyScalar(speed * dt);
     this.camera.position.add(this.move);
   }
 
@@ -130,8 +166,9 @@ export class SurfaceController {
     if (this.k('s')) this.move.addScaledVector(this.fwd, -1);
     if (this.k('d')) this.move.add(this.right);
     if (this.k('a')) this.move.addScaledVector(this.right, -1);
+    this.moving = this.move.lengthSq() > 0;
     const speed = this.walkSpeed * (sprint ? 2 : 1);
-    if (this.move.lengthSq() > 0) this.move.normalize().multiplyScalar(speed * dt);
+    if (this.moving) this.move.normalize().multiplyScalar(speed * dt);
     this.camera.position.x += this.move.x;
     this.camera.position.z += this.move.z;
 
@@ -139,14 +176,20 @@ export class SurfaceController {
     this.vy += this.gravity * dt;
     this.camera.position.y += this.vy * dt;
     const groundY = this.heightAtLocal(this.camera.position.x, this.camera.position.z) + this.eyeHeight;
+    this.jetpacking = false;
     if (this.camera.position.y <= groundY) {
       this.camera.position.y = groundY;
       this.vy = 0;
       this.onGround = true;
+      if (this.k(' ')) this.vy = this.jumpSpeed; // jump off the ground
     } else {
       this.onGround = false;
+      // Jetpack: hold jump in the air for upward thrust (energy-gated in Phase E).
+      if (this.k(' ') && this.vy < this.jetpackMaxRise) {
+        this.vy += this.jetpackAccel * dt;
+        this.jetpacking = true;
+      }
     }
-    if (this.onGround && this.k(' ')) this.vy = this.jumpSpeed;
   }
 
   dispose(): void {

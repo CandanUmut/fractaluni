@@ -26,4 +26,8 @@ export interface AppScene {
 
   /** Optional per-frame HUD lines for debugging. */
   hudLines?(): string[];
+
+  /** Optional pass rendered AFTER post-processing — e.g. a first-person
+   *  viewmodel that must never be clipped by world geometry. */
+  renderOverlay?(renderer: THREE.WebGLRenderer): void;
 }

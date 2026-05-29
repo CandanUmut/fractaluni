@@ -58,6 +58,8 @@ export class SceneManager {
   render(): void {
     if (this.current) {
       this.postfx.render();
+      // Overlay (e.g. first-person viewmodel) drawn on top of the composite.
+      this.current.renderOverlay?.(this.renderer);
     }
   }
 

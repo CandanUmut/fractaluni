@@ -2,19 +2,17 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeRNG, rangeFloat, type RNG } from '../core/rng.ts';
 import { deriveSeed } from '../core/hash.ts';
-import { clamp, clamp01, lerp, TAU } from '../core/math.ts';
+import { clamp01, lerp, TAU } from '../core/math.ts';
 import type { PlanetProfile, RGB } from '../universe/types.ts';
 import type { Palette } from '../palette/index.ts';
-import { CHUNK_SIZE, type TerrainSampler } from '../gen/terrain.ts';
-import { SIM_CELL } from '../sim/planetDiff.ts';
-import type { Ecosystem } from '../sim/ecosystem.ts';
+import type { TerrainSampler } from '../gen/terrain.ts';
 
 // Roaming animals: low-poly procedural morphology assembled from primitives
 // (body, head, 4 legs, tail), consistent per species per planet. Movement via
 // steering behaviours (wander + soft separation + terrain following). Rendered
 // as one InstancedMesh per species; positions follow the floating origin.
 
-interface CreatureParams {
+export interface CreatureParams {
   bodyW: number;
   bodyH: number;
   bodyL: number;
@@ -54,7 +52,7 @@ function blob(rx: number, ry: number, rz: number, x: number, y: number, z: numbe
 }
 
 /** Build a creature with feet at y=0, facing +Z. Body plan varies by params. */
-function creatureGeometry(p: CreatureParams): THREE.BufferGeometry {
+export function creatureGeometry(p: CreatureParams): THREE.BufferGeometry {
   const bodyY = p.legLen + p.bodyH / 2;
   const parts: THREE.BufferGeometry[] = [];
 
@@ -90,7 +88,7 @@ function creatureGeometry(p: CreatureParams): THREE.BufferGeometry {
   return merged;
 }
 
-function speciesParams(pal: Palette, rng: RNG): CreatureParams {
+export function speciesParams(pal: Palette, rng: RNG): CreatureParams {
   // Body color blends an earthy base with the planet's foliage, varied per
   // species (occasionally vivid on exotic worlds via the foliage palette).
   const base: RGB = { r: 0.45, g: 0.36, b: 0.26 };
@@ -119,7 +117,7 @@ function speciesParams(pal: Palette, rng: RNG): CreatureParams {
 }
 
 /** A leaner, reddish predator body plan, distinct from the herbivores. */
-function predatorParams(pal: Palette, rng: RNG): CreatureParams {
+export function predatorParams(pal: Palette, rng: RNG): CreatureParams {
   const t = rng();
   const bodyColor: RGB = {
     r: clamp01(0.45 + t * 0.35 + rng() * 0.15),
@@ -142,167 +140,142 @@ function predatorParams(pal: Palette, rng: RNG): CreatureParams {
   };
 }
 
-interface Agent {
-  ax: number; // absolute world x
-  az: number;
-  tx: number; // absolute target x
-  tz: number;
+
+interface Critter {
+  x: number;
+  z: number;
   heading: number;
+  turn: number;
   speed: number;
   phase: number;
-  species: number;
-  active: boolean;
 }
 
-const MAX_HERB = 70;
-const MAX_PRED = 22;
-const RESAMPLE = 0.6; // seconds between re-sampling the population fields
+// Ambient creature counts per species, by biome. Some of these become hostile
+// guardians in the scavenger layer; the rest are scenery/life.
+const SPECIES_DENSITY: Partial<Record<string, number>> = {
+  tropical: 16,
+  temperate: 13,
+  oceanic: 9,
+  tundra: 8,
+  arid: 7,
+  desert: 5,
+  frozen: 5,
+};
 
-function wrapAngle(a: number): number {
-  while (a > Math.PI) a -= TAU;
-  while (a < -Math.PI) a += TAU;
-  return a;
-}
-
-/** Renders herbivore + predator population FIELDS as a representative sample of
- *  visible creatures. The count and placement follow the field densities (more
- *  creatures where the population is dense); there is no per-animal life cycle —
- *  the sim is the fields, these are just their visualization. */
+/** Ambient roaming herds: low-poly procedural creatures that wander and follow
+ *  the terrain, seeded per planet. (No ecosystem simulation — reused as both
+ *  scenery and, in the scavenger layer, as the basis for deposit guardians.) */
 export class AnimalHerds {
   readonly group = new THREE.Group();
+  private readonly meshes: THREE.InstancedMesh[] = [];
+  private readonly critters: Critter[][] = [];
   private readonly material: THREE.MeshStandardMaterial;
   private readonly sampler: TerrainSampler;
-  private readonly herbMeshes: THREE.InstancedMesh[] = [];
-  private predMesh: THREE.InstancedMesh | null = null;
-  private readonly herbAgents: Agent[] = [];
-  private readonly predAgents: Agent[] = [];
-  private readonly lifeless: boolean;
-  private resampleT = 0;
+  /** Local→world height (applies the floating origin), injected by the scene. */
+  private readonly heightAt: (x: number, z: number) => number;
+  private readonly range = 150;
   private time = 0;
   private readonly dummy = new THREE.Object3D();
 
-  constructor(planet: PlanetProfile, planetSeed: number, pal: Palette, sampler: TerrainSampler) {
+  constructor(
+    planet: PlanetProfile,
+    planetSeed: number,
+    pal: Palette,
+    sampler: TerrainSampler,
+    heightAtLocal: (x: number, z: number) => number,
+  ) {
     this.sampler = sampler;
+    this.heightAt = heightAtLocal;
     this.material = new THREE.MeshStandardMaterial({
       vertexColors: true,
       flatShading: true,
       roughness: 0.85,
       metalness: 0.0,
     });
-    this.lifeless = planet.biome === 'molten' || planet.biome === 'barren-rock';
-    if (this.lifeless) return;
+    if (planet.biome === 'molten' || planet.biome === 'barren-rock') return;
+    const perSpecies = SPECIES_DENSITY[planet.biome] ?? 0;
+    if (perSpecies === 0) return;
 
-    const nHerb = 2;
-    for (let s = 0; s < nHerb; s++) {
+    const nSpecies = 2;
+    for (let s = 0; s < nSpecies; s++) {
       const rng = makeRNG(deriveSeed(planetSeed, 0xfa00, s));
       const geo = creatureGeometry(speciesParams(pal, rng));
-      const mesh = new THREE.InstancedMesh(geo, this.material, MAX_HERB);
-      mesh.count = 0;
+      const mesh = new THREE.InstancedMesh(geo, this.material, perSpecies);
+      mesh.count = perSpecies;
       mesh.frustumCulled = false;
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      this.herbMeshes.push(mesh);
+      this.meshes.push(mesh);
       this.group.add(mesh);
-    }
-    const predGeo = creatureGeometry(predatorParams(pal, makeRNG(deriveSeed(planetSeed, 0xfeed))));
-    this.predMesh = new THREE.InstancedMesh(predGeo, this.material, MAX_PRED);
-    this.predMesh.count = 0;
-    this.predMesh.frustumCulled = false;
-    this.predMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.group.add(this.predMesh);
 
-    for (let i = 0; i < MAX_HERB; i++) {
-      this.herbAgents.push(this.newAgent(i % nHerb, rangeFloat(makeRNG(i + 1), 2.5, 6)));
-    }
-    for (let i = 0; i < MAX_PRED; i++) {
-      this.predAgents.push(this.newAgent(0, rangeFloat(makeRNG(i + 99), 4, 8)));
+      const list: Critter[] = [];
+      for (let i = 0; i < perSpecies; i++) {
+        list.push({
+          x: (rng() - 0.5) * this.range,
+          z: (rng() - 0.5) * this.range,
+          heading: rng() * TAU,
+          turn: 0,
+          speed: rangeFloat(rng, 2.5, 6),
+          phase: rng() * TAU,
+        });
+      }
+      this.critters.push(list);
     }
   }
 
-  private newAgent(species: number, speed: number): Agent {
-    return { ax: 0, az: 0, tx: 0, tz: 0, heading: 0, speed, phase: Math.random() * TAU, species, active: false };
+  /** Keep herds in place when the floating origin recenters. */
+  shift(dx: number, dz: number): void {
+    for (const list of this.critters) {
+      for (const c of list) {
+        c.x -= dx;
+        c.z -= dz;
+      }
+    }
   }
 
-  update(dt: number, eco: Ecosystem, originCX: number, originCZ: number): void {
-    if (this.lifeless) return;
+  update(dt: number, playerLocal: THREE.Vector3): void {
+    if (this.meshes.length === 0) return;
     this.time += dt;
-    this.resampleT -= dt;
-    if (this.resampleT <= 0) {
-      this.resampleT = RESAMPLE;
-      this.assign(this.herbAgents, eco, eco.herbivore, clamp(Math.round(eco.totalHerbivores() / 60), 0, MAX_HERB));
-      this.assign(this.predAgents, eco, eco.predator, clamp(Math.round(eco.totalPredators() / 36), 0, MAX_PRED));
-    }
-    this.render(this.herbAgents, this.herbMeshes, dt, originCX, originCZ);
-    if (this.predMesh) this.render(this.predAgents, [this.predMesh], dt, originCX, originCZ);
-  }
+    const seaGuard = this.sampler.hasWater ? this.sampler.seaLevel + 0.4 : -Infinity;
 
-  /** Re-target the first `desired` agents to cells sampled ∝ population. */
-  private assign(agents: Agent[], eco: Ecosystem, field: Float32Array, desired: number): void {
-    for (let i = 0; i < agents.length; i++) {
-      const a = agents[i]!;
-      if (i < desired) {
-        const k = eco.sampleCell(field, Math.random());
-        if (k < 0) {
-          a.active = false;
-          continue;
+    for (let s = 0; s < this.meshes.length; s++) {
+      const list = this.critters[s]!;
+      const mesh = this.meshes[s]!;
+      for (let i = 0; i < list.length; i++) {
+        const c = list[i]!;
+        c.turn += (Math.random() - 0.5) * dt * 2.5; // visual jitter only
+        c.turn *= 0.9;
+        c.heading += c.turn * dt;
+
+        // Steer back toward the player if it wandered too far.
+        const dxp = playerLocal.x - c.x;
+        const dzp = playerLocal.z - c.z;
+        if (Math.hypot(dxp, dzp) > this.range) {
+          c.heading = lerp(c.heading, Math.atan2(dxp, dzp), 0.04);
         }
-        const ci = k % eco.width;
-        const cj = Math.floor(k / eco.width);
-        const [cx, cz] = eco.worldCenter(ci, cj);
-        a.tx = cx + (Math.random() - 0.5) * SIM_CELL;
-        a.tz = cz + (Math.random() - 0.5) * SIM_CELL;
-        if (!a.active) {
-          a.ax = a.tx;
-          a.az = a.tz;
-          a.active = true;
+
+        const nx = c.x + Math.sin(c.heading) * c.speed * dt;
+        const nz = c.z + Math.cos(c.heading) * c.speed * dt;
+        if (this.heightAt(nx, nz) < seaGuard) {
+          c.heading += 2.2 * dt + 0.4; // veer off water
+        } else {
+          c.x = nx;
+          c.z = nz;
         }
-      } else {
-        a.active = false;
-      }
-    }
-  }
 
-  private render(
-    agents: Agent[],
-    meshes: THREE.InstancedMesh[],
-    dt: number,
-    ocx: number,
-    ocz: number,
-  ): void {
-    const counts = meshes.map(() => 0);
-    for (const a of agents) {
-      if (!a.active) continue;
-      // Steer toward the assigned cell; idle-wander once arrived.
-      const dx = a.tx - a.ax;
-      const dz = a.tz - a.az;
-      const dist = Math.hypot(dx, dz);
-      if (dist > 1.5) {
-        const want = Math.atan2(dx, dz);
-        a.heading += wrapAngle(want - a.heading) * Math.min(1, dt * 2.5);
-        a.ax += Math.sin(a.heading) * a.speed * dt;
-        a.az += Math.cos(a.heading) * a.speed * dt;
-      } else {
-        a.heading += (Math.random() - 0.5) * dt;
+        const gy = this.heightAt(c.x, c.z);
+        const bob = Math.sin(this.time * (3 + c.speed) + c.phase) * 0.06;
+        this.dummy.position.set(c.x, gy + bob, c.z);
+        this.dummy.rotation.set(0, c.heading, 0);
+        this.dummy.scale.setScalar(1);
+        this.dummy.updateMatrix();
+        mesh.setMatrixAt(i, this.dummy.matrix);
       }
-
-      const meshIdx = meshes.length === 1 ? 0 : a.species;
-      const mesh = meshes[meshIdx]!;
-      const bob = Math.sin(this.time * (3 + a.speed) + a.phase) * 0.06;
-      this.dummy.position.set(a.ax - ocx * CHUNK_SIZE, this.sampler.heightAt(a.ax, a.az) + bob, a.az - ocz * CHUNK_SIZE);
-      this.dummy.rotation.set(0, a.heading, 0);
-      this.dummy.scale.setScalar(1);
-      this.dummy.updateMatrix();
-      mesh.setMatrixAt(counts[meshIdx]!, this.dummy.matrix);
-      counts[meshIdx]!++;
-    }
-    for (let i = 0; i < meshes.length; i++) {
-      meshes[i]!.count = counts[i]!;
-      meshes[i]!.instanceMatrix.needsUpdate = true;
+      mesh.instanceMatrix.needsUpdate = true;
     }
   }
 
   dispose(): void {
-    for (const m of this.herbMeshes) m.geometry.dispose();
-    this.predMesh?.geometry.dispose();
+    for (const m of this.meshes) m.geometry.dispose();
     this.material.dispose();
   }
 }
