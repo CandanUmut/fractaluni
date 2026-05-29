@@ -114,6 +114,8 @@ export class SurfaceScene implements AppScene {
   private readonly sun: THREE.DirectionalLight;
   private readonly sunDir = new THREE.Vector3();
   private ambient!: THREE.AmbientLight;
+  private readonly flashlight: THREE.SpotLight;
+  private flashOn = false;
   private timeOfDay = 0; // 0..1 around the day
   private readonly dayLength = 210; // seconds per full day
   private sunAz = 0;
@@ -191,6 +193,12 @@ export class SurfaceScene implements AppScene {
     this.sky = new SkyDome(pal.skyHorizon, pal.skyZenith, pal.sun, sunDir);
     this.scene.add(this.sky.mesh);
 
+    // Flashlight / headlamp (toggle with F) — for night and dark worlds.
+    this.flashlight = new THREE.SpotLight(0xfff2d6, 0, 90, 0.55, 0.45, 1.0);
+    this.flashlight.visible = false;
+    this.scene.add(this.flashlight);
+    this.scene.add(this.flashlight.target);
+
     // Terrain + flora.
     this.chunks = new ChunkManager(this.sampler);
     this.scene.add(this.chunks.group);
@@ -218,7 +226,11 @@ export class SurfaceScene implements AppScene {
     // Fauna (ambient). Lifeless biomes get none.
     const lifeless = this.planet.biome === 'molten' || this.planet.biome === 'barren-rock';
     if (!lifeless) {
-      this.birds = new BirdFlock(deriveSeed(this.planet.seed, 0xb1d5), 90, birdColor(pal.foliage), heightAtLocal);
+      // Per-planet flyer size: some worlds host small birds, others big pterosaurs.
+      const flyRng = makeRNG(deriveSeed(this.planet.seed, 0xf17e));
+      const flyerScale = lerp(1.2, 3.4, flyRng());
+      const flyerCount = Math.round(lerp(110, 50, (flyerScale - 1.2) / 2.2)); // fewer, bigger
+      this.birds = new BirdFlock(deriveSeed(this.planet.seed, 0xb1d5), flyerCount, birdColor(pal.foliage), heightAtLocal, flyerScale);
       this.scene.add(this.birds.mesh);
     } else {
       this.birds = null;
@@ -426,6 +438,11 @@ export class SurfaceScene implements AppScene {
       this.switchWeapon(1);
     } else if (e.key === '3') {
       this.switchWeapon(2);
+    } else if (e.key === 'f' || e.key === 'F') {
+      this.flashOn = !this.flashOn;
+      this.flashlight.intensity = this.flashOn ? 120 : 0;
+      this.flashlight.visible = this.flashOn;
+      this.lastMsg = `flashlight ${this.flashOn ? 'on' : 'off'}`;
     } else if (e.key === 'r' || e.key === 'R') {
       const n = this.nodes.nearby(this.originCX, this.originCZ, this.camera.position.x, this.camera.position.z, this.scanRange).length;
       this.lastMsg = `scan: ${n} deposit${n === 1 ? '' : 's'} within scanner range`;
@@ -561,6 +578,12 @@ export class SurfaceScene implements AppScene {
     this.herds.update(sdt, this.camera.position);
     this.sky.follow(this.camera.position);
     this.updateDayNight(dt);
+    // Flashlight tracks the camera, aimed forward.
+    if (this.flashOn) {
+      this.camera.getWorldDirection(this.aimDir);
+      this.flashlight.position.copy(this.camera.position);
+      this.flashlight.target.position.copy(this.camera.position).addScaledVector(this.aimDir, 12);
+    }
     if (this.water) this.water.update(sdt, this.camera.position, this.sampler.seaLevel);
 
     // Deposits + guardians stream around the player.

@@ -110,8 +110,11 @@ export class BirdFlock {
   private readonly bounds = 120;
   private readonly bandY = 38; // flight height above player
 
-  constructor(seed: number, count: number, color: RGB, heightAtLocal: (x: number, z: number) => number) {
+  private readonly bodyScale: number;
+
+  constructor(seed: number, count: number, color: RGB, heightAtLocal: (x: number, z: number) => number, scale = 1.6) {
     this.heightAtLocal = heightAtLocal;
+    this.bodyScale = scale;
     const rng = makeRNG(seed);
     for (let i = 0; i < count; i++) {
       this.boids.push({
@@ -219,7 +222,7 @@ export class BirdFlock {
       this.q.setFromUnitVectors(this.fwd, this.tmp);
       this.dummy.position.copy(b.pos);
       this.dummy.quaternion.copy(this.q);
-      this.dummy.scale.setScalar(1.6);
+      this.dummy.scale.setScalar(this.bodyScale);
       this.dummy.updateMatrix();
       this.mesh.setMatrixAt(i, this.dummy.matrix);
     }

@@ -12,6 +12,9 @@ import type { TerrainSampler } from '../gen/terrain.ts';
 // steering behaviours (wander + soft separation + terrain following). Rendered
 // as one InstancedMesh per species; positions follow the floating origin.
 
+export type Archetype = 'grazer' | 'sauropod' | 'raptor' | 'beetle';
+export const HERBIVORE_ARCHETYPES: Archetype[] = ['grazer', 'sauropod', 'raptor', 'beetle'];
+
 export interface CreatureParams {
   bodyW: number;
   bodyH: number;
@@ -21,7 +24,12 @@ export interface CreatureParams {
   headR: number;
   legCount: number; // 2 (biped), 4 (quadruped), or 6 (hexapod)
   round: boolean; // blob body vs boxy body
-  neck: number; // head forward/up offset multiplier (giraffe vs lizard)
+  neckSegs: number; // articulated neck segments (0 = head on body)
+  neckLen: number;
+  neckRise: number; // upward arc per segment (radians)
+  tailSegs: number;
+  tailLen: number;
+  tailDrop: number; // downward arc per tail segment
   bodyColor: RGB;
   legColor: RGB;
 }
@@ -61,42 +69,66 @@ function ball(r: number, x: number, y: number, z: number, c: RGB): THREE.BufferG
 const EYE_WHITE: RGB = { r: 0.93, g: 0.94, b: 0.96 };
 const PUPIL: RGB = { r: 0.04, g: 0.04, b: 0.06 };
 
-/** Build a creature with feet at y=0, facing +Z. Body plan varies by params. */
+/** Build a creature with feet at y=0, facing +Z. Articulated neck + tail give
+ *  distinct dinosaur silhouettes (sauropod, raptor, …). */
 export function creatureGeometry(p: CreatureParams): THREE.BufferGeometry {
   const bodyY = p.legLen + p.bodyH / 2;
+  const hr = p.headR;
   const parts: THREE.BufferGeometry[] = [];
 
-  // Body — boxy or blobby.
   parts.push(
     p.round
       ? blob(p.bodyW / 2, p.bodyH / 2, p.bodyL / 2, 0, bodyY, 0, p.bodyColor)
       : box(p.bodyW, p.bodyH, p.bodyL, 0, bodyY, 0, p.bodyColor),
   );
 
-  // Head, set forward and up by the neck factor.
-  const hr = p.headR;
-  const headY = bodyY + p.bodyH * 0.4 * p.neck;
-  const headZ = p.bodyL / 2 + hr * 0.6;
-  parts.push(blob(hr * 0.8, hr * 0.8, hr * 0.95, 0, headY, headZ, p.bodyColor));
-
-  // Face: two eyes (white + pupil) and a small snout, so it reads as a creature.
-  const ex = hr * 0.42;
-  const ez = headZ + hr * 0.5;
-  const ey = headY + hr * 0.18;
-  for (const sx of [-1, 1]) {
-    parts.push(ball(hr * 0.26, sx * ex, ey, ez, EYE_WHITE));
-    parts.push(ball(hr * 0.14, sx * ex, ey, ez + hr * 0.16, PUPIL));
+  // Neck chain rising forward; head at the end (or directly on the body).
+  let headX = 0;
+  let headY = bodyY + p.bodyH * 0.3;
+  let headZ = p.bodyL / 2 + hr * 0.5;
+  if (p.neckSegs > 0) {
+    let ny = bodyY + p.bodyH * 0.35;
+    let nz = p.bodyL / 2;
+    let ang = 0.15;
+    for (let i = 0; i < p.neckSegs; i++) {
+      ang += p.neckRise;
+      nz += Math.cos(ang) * p.neckLen;
+      ny += Math.sin(ang) * p.neckLen;
+      const w = lerp(p.bodyW * 0.45, hr * 0.9, i / p.neckSegs);
+      parts.push(box(w, w, p.neckLen * 1.15, 0, ny, nz, p.bodyColor));
+    }
+    headY = ny + Math.sin(ang) * hr;
+    headZ = nz + Math.cos(ang) * hr * 0.6;
   }
-  parts.push(box(hr * 0.5, hr * 0.42, hr * 0.55, 0, headY - hr * 0.22, headZ + hr * 0.35, p.legColor));
 
-  // Tail.
-  parts.push(box(p.legW * 0.8, p.legW * 0.8, p.bodyL * 0.4, 0, bodyY, -p.bodyL / 2 - p.bodyL * 0.18, p.legColor));
+  // Head + eyes + snout.
+  parts.push(blob(hr * 0.85, hr * 0.85, hr, headX, headY, headZ, p.bodyColor));
+  const ex = hr * 0.45;
+  for (const sx of [-1, 1]) {
+    parts.push(ball(hr * 0.27, sx * ex, headY + hr * 0.2, headZ + hr * 0.45, EYE_WHITE));
+    parts.push(ball(hr * 0.15, sx * ex, headY + hr * 0.2, headZ + hr * 0.6, PUPIL));
+  }
+  parts.push(box(hr * 0.55, hr * 0.45, hr * 0.6, 0, headY - hr * 0.2, headZ + hr * 0.45, p.legColor));
 
-  // Legs: distribute pairs along the body length.
+  // Tail chain tapering back + down.
+  if (p.tailSegs > 0) {
+    let ty = bodyY;
+    let tz = -p.bodyL / 2;
+    let ang = -0.05;
+    for (let i = 0; i < p.tailSegs; i++) {
+      ang -= p.tailDrop;
+      tz -= Math.cos(ang) * p.tailLen;
+      ty = Math.max(0.08, ty + Math.sin(ang) * p.tailLen);
+      const w = lerp(p.bodyW * 0.4, 0.06, i / p.tailSegs);
+      parts.push(box(w, w, p.tailLen * 1.15, 0, ty, tz, p.legColor));
+    }
+  }
+
+  // Legs.
   const pairs = Math.max(1, Math.round(p.legCount / 2));
   const lx = p.bodyW / 2 - p.legW / 2;
   for (let i = 0; i < pairs; i++) {
-    const tz = pairs === 1 ? -0.2 : i / (pairs - 1); // 0..1 front→back
+    const tz = pairs === 1 ? 0.5 : i / (pairs - 1);
     const lz = (0.5 - tz) * (p.bodyL - 2 * p.legW);
     for (const sx of [-1, 1]) {
       parts.push(box(p.legW, p.legLen, p.legW, sx * lx, p.legLen / 2, lz, p.legColor));
@@ -109,56 +141,64 @@ export function creatureGeometry(p: CreatureParams): THREE.BufferGeometry {
   return merged;
 }
 
-export function speciesParams(pal: Palette, rng: RNG): CreatureParams {
-  // Body color blends an earthy base with the planet's foliage, varied per
-  // species (occasionally vivid on exotic worlds via the foliage palette).
+interface Struct {
+  bodyW: number; bodyH: number; bodyL: number; legLen: number; legW: number; headR: number;
+  legCount: number; round: boolean; neckSegs: number; neckLen: number; neckRise: number;
+  tailSegs: number; tailLen: number; tailDrop: number; scaleMin: number; scaleMax: number;
+}
+
+function structFor(arch: Archetype): Struct {
+  switch (arch) {
+    case 'sauropod':
+      return { bodyW: 1.5, bodyH: 1.3, bodyL: 3.0, legLen: 1.5, legW: 0.4, headR: 0.5, legCount: 4, round: false, neckSegs: 5, neckLen: 0.8, neckRise: 0.2, tailSegs: 6, tailLen: 0.8, tailDrop: 0.05, scaleMin: 1.4, scaleMax: 2.2 };
+    case 'raptor':
+      return { bodyW: 0.6, bodyH: 0.95, bodyL: 1.3, legLen: 1.35, legW: 0.18, headR: 0.38, legCount: 2, round: false, neckSegs: 2, neckLen: 0.45, neckRise: 0.32, tailSegs: 4, tailLen: 0.55, tailDrop: 0.03, scaleMin: 0.9, scaleMax: 1.5 };
+    case 'beetle':
+      return { bodyW: 1.0, bodyH: 0.55, bodyL: 1.3, legLen: 0.5, legW: 0.16, headR: 0.32, legCount: 6, round: true, neckSegs: 0, neckLen: 0, neckRise: 0, tailSegs: 0, tailLen: 0, tailDrop: 0, scaleMin: 0.6, scaleMax: 1.1 };
+    case 'grazer':
+    default:
+      return { bodyW: 0.9, bodyH: 0.8, bodyL: 1.8, legLen: 0.95, legW: 0.22, headR: 0.45, legCount: 4, round: false, neckSegs: 1, neckLen: 0.5, neckRise: 0.28, tailSegs: 1, tailLen: 0.5, tailDrop: 0.1, scaleMin: 0.8, scaleMax: 1.3 };
+  }
+}
+
+function bodyColorFor(pal: Palette, rng: RNG, predator: boolean): RGB {
+  if (predator) {
+    return {
+      r: clamp01(0.45 + rng() * 0.4),
+      g: clamp01(0.08 + pal.foliage.g * 0.15 + rng() * 0.1),
+      b: clamp01(0.1 + rng() * 0.2),
+    };
+  }
   const base: RGB = { r: 0.45, g: 0.36, b: 0.26 };
   const t = rng();
-  const bodyColor: RGB = {
+  return {
     r: clamp01(lerp(base.r, pal.foliage.r, t * 0.6) * (0.7 + rng() * 0.6)),
     g: clamp01(lerp(base.g, pal.foliage.g, t * 0.6) * (0.7 + rng() * 0.6)),
     b: clamp01(lerp(base.b, pal.foliage.b, t * 0.6) * (0.7 + rng() * 0.6)),
   };
-  const scale = rangeFloat(rng, 0.7, 1.7);
-  const legCount = [2, 4, 4, 6][Math.floor(rng() * 4)]!; // quadrupeds most common
-  const round = rng() < 0.4;
+}
+
+function paramsFromStruct(s: Struct, k: number, bodyColor: RGB): CreatureParams {
   return {
-    bodyW: (round ? 1.0 : 0.9) * scale,
-    bodyH: (legCount === 2 ? 1.0 : 0.8) * scale,
-    bodyL: (legCount === 6 ? 2.2 : 1.8) * scale,
-    legLen: rangeFloat(rng, 0.6, 1.4) * scale,
-    legW: 0.22 * scale,
-    headR: rangeFloat(rng, 0.35, 0.6) * scale,
-    legCount,
-    round,
-    neck: rangeFloat(rng, 0.5, 2.2),
+    bodyW: s.bodyW * k, bodyH: s.bodyH * k, bodyL: s.bodyL * k, legLen: s.legLen * k, legW: s.legW * k, headR: s.headR * k,
+    legCount: s.legCount, round: s.round,
+    neckSegs: s.neckSegs, neckLen: s.neckLen * k, neckRise: s.neckRise,
+    tailSegs: s.tailSegs, tailLen: s.tailLen * k, tailDrop: s.tailDrop,
     bodyColor,
     legColor: { r: bodyColor.r * 0.7, g: bodyColor.g * 0.7, b: bodyColor.b * 0.7 },
   };
 }
 
-/** A leaner, reddish predator body plan, distinct from the herbivores. */
+/** Build params for a herbivore of a given archetype, colored by planet. */
+export function speciesParams(arch: Archetype, pal: Palette, rng: RNG): CreatureParams {
+  const s = structFor(arch);
+  return paramsFromStruct(s, rangeFloat(rng, s.scaleMin, s.scaleMax), bodyColorFor(pal, rng, false));
+}
+
+/** A menacing predator body plan (raptor-ish, reddish, larger). */
 export function predatorParams(pal: Palette, rng: RNG): CreatureParams {
-  const t = rng();
-  const bodyColor: RGB = {
-    r: clamp01(0.45 + t * 0.35 + rng() * 0.15),
-    g: clamp01(0.1 + pal.foliage.g * 0.15 + rng() * 0.1),
-    b: clamp01(0.12 + rng() * 0.18),
-  };
-  const scale = rangeFloat(rng, 1.1, 1.9);
-  return {
-    bodyW: 0.7 * scale,
-    bodyH: 0.7 * scale,
-    bodyL: 2.1 * scale,
-    legLen: rangeFloat(rng, 0.85, 1.4) * scale,
-    legW: 0.2 * scale,
-    headR: 0.45 * scale,
-    legCount: 4,
-    round: false,
-    neck: 0.7,
-    bodyColor,
-    legColor: { r: bodyColor.r * 0.6, g: bodyColor.g * 0.6, b: bodyColor.b * 0.6 },
-  };
+  const s = structFor('raptor');
+  return paramsFromStruct(s, rangeFloat(rng, 1.4, 2.1), bodyColorFor(pal, rng, true));
 }
 
 
@@ -218,9 +258,16 @@ export class AnimalHerds {
     if (perSpecies === 0) return;
 
     const nSpecies = 2;
+    // Shuffle the archetype pool per planet so worlds host different creatures.
+    const pool = [...HERBIVORE_ARCHETYPES];
+    const shuf = makeRNG(deriveSeed(planetSeed, 0xa12c));
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(shuf() * (i + 1));
+      [pool[i], pool[j]] = [pool[j]!, pool[i]!];
+    }
     for (let s = 0; s < nSpecies; s++) {
       const rng = makeRNG(deriveSeed(planetSeed, 0xfa00, s));
-      const geo = creatureGeometry(speciesParams(pal, rng));
+      const geo = creatureGeometry(speciesParams(pool[s % pool.length]!, pal, rng));
       const mesh = new THREE.InstancedMesh(geo, this.material, perSpecies);
       mesh.count = perSpecies;
       mesh.castShadow = true;
