@@ -15,7 +15,9 @@ import { rgbToHex } from '../core/color.ts';
 import { planetPath, loadDiff, saveDiff } from '../sim/persistence.ts';
 import { emptyDiff, cellKeyOf, cellCenter, parseCellKey, SIM_CELL, type PlanetDiff } from '../sim/planetDiff.ts';
 import { Ecosystem } from '../sim/ecosystem.ts';
+import { DynamicFlora } from '../gen/dynamicFlora.ts';
 import { FieldOverlay } from '../ui/fieldOverlay.ts';
+import type { CellEdit } from '../sim/planetDiff.ts';
 import { clamp, lerp, DEG2RAD, TAU } from '../core/math.ts';
 import { makeRNG } from '../core/rng.ts';
 import { deriveSeed } from '../core/hash.ts';
@@ -61,10 +63,16 @@ export class SurfaceScene implements AppScene {
 
   // v2 Phase B: local ecosystem field sim + time controls + debug overlay.
   private readonly eco: Ecosystem;
+  private readonly dynamicFlora: DynamicFlora;
   private readonly overlay: FieldOverlay;
   private simAccum = 0;
   private timeScale = 1;
   private paused = false;
+
+  // v2 Phase D: lightly-gathered resources spent on embodied transformation.
+  private seeds = 3;
+  private samples = 2;
+  private lastAction = '';
 
   constructor(
     universeSeed: number,
@@ -167,6 +175,7 @@ export class SurfaceScene implements AppScene {
         this.elapsed = d.lastVisited;
       }
       this.rebuildMarkers();
+      this.applyDiffToEco();
     });
 
     // Ecosystem field sim over a fixed region centered on the spawn point.
@@ -185,6 +194,9 @@ export class SurfaceScene implements AppScene {
     });
     const hudRoot = document.getElementById('hud') ?? document.body;
     this.overlay = new FieldOverlay(hudRoot, GRID, GRID);
+
+    this.dynamicFlora = new DynamicFlora(this.planet.seed, pal, this.sampler);
+    this.scene.add(this.dynamicFlora.group);
 
     // Prime the full view radius synchronously during the descent transition so
     // the surface is fully present on the first rendered frame (no pop-in burst).
@@ -212,8 +224,123 @@ export class SurfaceScene implements AppScene {
       this.overlay.setVisible(!this.overlay.visible);
     } else if (e.key === 'i' || e.key === 'I') {
       this.overlay.cycle();
+    } else if (e.key === 'x' || e.key === 'X') {
+      this.gather();
+    } else if (e.key === 'f' || e.key === 'F') {
+      this.act('plant');
+    } else if (e.key === 'c' || e.key === 'C') {
+      this.act('clear');
+    } else if (e.key === 'v' || e.key === 'V') {
+      this.act('water');
+    } else if (e.key === 'h' || e.key === 'H') {
+      this.act('herb');
+    } else if (e.key === 'y' || e.key === 'Y') {
+      this.act('pred');
     }
   };
+
+  private playerGridCell(): { i: number; j: number; k: number; gx: number; gz: number } | null {
+    const absX = this.originCX * CHUNK_SIZE + this.camera.position.x;
+    const absZ = this.originCZ * CHUNK_SIZE + this.camera.position.z;
+    const gx = Math.floor(absX / SIM_CELL);
+    const gz = Math.floor(absZ / SIM_CELL);
+    const [i, j] = this.eco.gridIndex(gx, gz);
+    if (!this.eco.inGrid(i, j)) return null;
+    return { i, j, k: j * this.eco.width + i, gx, gz };
+  }
+
+  private editCell(gx: number, gz: number, edit: CellEdit): void {
+    const key = `${gx},${gz}`;
+    this.diff.cells.set(key, { ...(this.diff.cells.get(key) ?? {}), ...edit });
+  }
+
+  /** Gather a seed (on vegetation) or a creature sample (near a herd). */
+  private gather(): void {
+    const c = this.playerGridCell();
+    if (!c) {
+      this.lastAction = 'out of the simulated region';
+      return;
+    }
+    if (this.eco.vegetation[c.k]! > 0.2 && this.seeds < 9) {
+      this.seeds++;
+      this.lastAction = 'gathered a seed';
+    } else if (this.eco.herbivore[c.k]! > 0.6 && this.samples < 9) {
+      this.samples++;
+      this.lastAction = 'gathered a creature sample';
+    } else {
+      this.lastAction = 'nothing to gather here (stand on growth / near a herd)';
+    }
+  }
+
+  private forEachNeighbor(i: number, j: number, fn: (k: number) => void): void {
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        if (this.eco.inGrid(i + di, j + dj)) fn((j + dj) * this.eco.width + (i + di));
+      }
+    }
+  }
+
+  private act(kind: 'plant' | 'clear' | 'water' | 'herb' | 'pred'): void {
+    const c = this.playerGridCell();
+    if (!c) {
+      this.lastAction = 'out of the simulated region';
+      return;
+    }
+    switch (kind) {
+      case 'plant':
+        if (this.seeds <= 0) {
+          this.lastAction = 'no seeds — press X on vegetation to gather';
+          return;
+        }
+        this.seeds--;
+        this.forEachNeighbor(c.i, c.j, (k) => {
+          if (!this.eco.isWater[k]) this.eco.vegetation[k] = Math.max(this.eco.vegetation[k]!, 0.75);
+        });
+        this.editCell(c.gx, c.gz, { planted: true, cleared: false });
+        this.lastAction = 'planted a seed — it will grow and spread';
+        break;
+      case 'clear':
+        this.forEachNeighbor(c.i, c.j, (k) => (this.eco.vegetation[k] = 0));
+        this.editCell(c.gx, c.gz, { cleared: true, planted: false });
+        this.lastAction = 'cleared the vegetation here';
+        break;
+      case 'water':
+        this.eco.applyEdit(c.i, c.j, { water: true });
+        this.forEachNeighbor(c.i, c.j, (k) => (this.eco.moisture[k] = Math.max(this.eco.moisture[k]!, 0.85)));
+        this.editCell(c.gx, c.gz, { water: true });
+        this.lastAction = 'dug a water source — moisture will spread';
+        break;
+      case 'herb':
+        if (this.samples <= 0) {
+          this.lastAction = 'no samples — press X near a herd to gather';
+          return;
+        }
+        this.samples--;
+        this.eco.herbivore[c.k] = Math.min(8, this.eco.herbivore[c.k]! + 4);
+        this.editCell(c.gx, c.gz, { herb: 4 });
+        this.lastAction = 'introduced herbivores';
+        break;
+      case 'pred':
+        if (this.samples <= 0) {
+          this.lastAction = 'no samples — press X near a herd to gather';
+          return;
+        }
+        this.samples--;
+        this.eco.predator[c.k] = Math.min(4, this.eco.predator[c.k]! + 2);
+        this.editCell(c.gx, c.gz, { pred: 2 });
+        this.lastAction = 'introduced predators';
+        break;
+    }
+    this.persist();
+  }
+
+  private applyDiffToEco(): void {
+    for (const [key, edit] of this.diff.cells) {
+      const [gx, gz] = parseCellKey(key);
+      const [i, j] = this.eco.gridIndex(gx, gz);
+      this.eco.applyEdit(i, j, edit);
+    }
+  }
 
   /** Place/remove a persistent marker on the player's current sim cell. */
   private toggleMarker(): void {
@@ -284,8 +411,9 @@ export class SurfaceScene implements AppScene {
         steps++;
       }
     }
-    // Render the population fields as a sample of visible creatures.
+    // Render the population + vegetation fields as visible samples.
     this.herds.update(dt, this.eco, this.originCX, this.originCZ);
+    this.dynamicFlora.update(dt, this.eco, this.originCX, this.originCZ);
     // Debug overlay (player cell relative to the sim grid origin).
     const absX = this.originCX * CHUNK_SIZE + this.camera.position.x;
     const absZ = this.originCZ * CHUNK_SIZE + this.camera.position.z;
@@ -301,6 +429,7 @@ export class SurfaceScene implements AppScene {
 
   dispose(): void {
     this.persist(); // save the diff when leaving the planet
+    this.dynamicFlora.dispose();
     this.overlay.dispose();
     this.markerGeo.dispose();
     this.markerMat.dispose();
@@ -325,6 +454,8 @@ export class SurfaceScene implements AppScene {
       `markers: ${this.markers.length}  ([M] mark this spot — persists across visits)`,
       `sim: ${this.paused ? 'paused' : `▶ ${this.timeScale}×`}  veg ${this.eco.totalVegetation().toFixed(0)} · herb ${this.eco.totalHerbivores().toFixed(0)} · pred ${this.eco.totalPredators().toFixed(0)}`,
       `[K] pause [L] speed [J] skip · overlay: ${this.overlay.visible ? this.overlay.field : 'off'} ([O] toggle [I] field)`,
+      `seeds ${this.seeds} · samples ${this.samples} — [X] gather [F] plant [C] clear [V] water [H] herbivores [Y] predators`,
+      ...(this.lastAction ? [`» ${this.lastAction}`] : []),
     ];
     if (!this.controller.isLocked) {
       lines.push('click to capture mouse · WASD move · Space jump/up · Shift sprint/boost');

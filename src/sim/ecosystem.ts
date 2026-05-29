@@ -132,6 +132,31 @@ export class Ecosystem {
     return this.moisture[k]! * this.tempSuit[k]!;
   }
 
+  inGrid(i: number, j: number): boolean {
+    return i >= 0 && i < this.width && j >= 0 && j < this.height;
+  }
+
+  /** Convert absolute sim-cell coords to grid indices. */
+  gridIndex(gx: number, gz: number): [number, number] {
+    return [gx - this.originGX, gz - this.originGZ];
+  }
+
+  /** Apply a persistent player edit to the live fields. Used both when a diff is
+   *  loaded on entry and immediately when the player acts. */
+  applyEdit(i: number, j: number, edit: import('./planetDiff.ts').CellEdit): void {
+    if (!this.inGrid(i, j)) return;
+    const k = this.idx(i, j);
+    if (edit.water) {
+      this.isWater[k] = 1;
+      this.moisture[k] = 1;
+      this.vegetation[k] = 0;
+    }
+    if (edit.cleared) this.vegetation[k] = 0;
+    if (edit.planted && !this.isWater[k]) this.vegetation[k] = Math.max(this.vegetation[k]!, 0.75);
+    if (edit.herb) this.herbivore[k] = Math.min(8, this.herbivore[k]! + edit.herb);
+    if (edit.pred) this.predator[k] = Math.min(4, this.predator[k]! + edit.pred);
+  }
+
   /** Advance the simulation by `dt` sim-seconds (one tick). */
   step(dt: number): void {
     const w = this.width;

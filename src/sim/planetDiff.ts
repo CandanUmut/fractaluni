@@ -8,11 +8,20 @@
 /** Sim grid resolution in world units (low-res, per the v2 "fields" rule). */
 export const SIM_CELL = 16;
 
-/** Per-cell edits relative to baseline. Phase A only needs a marker; later
- *  phases add vegetation/moisture/population overrides here. */
+/** Per-cell edits relative to baseline — the player's footprint on a planet. */
 export interface CellEdit {
   /** A player-placed marker (Phase A plumbing proof). */
   marker?: boolean;
+  /** Player seeded vegetation here (a lasting growth source). */
+  planted?: boolean;
+  /** Player cleared vegetation here. */
+  cleared?: boolean;
+  /** Player dug a water source here (a pond). */
+  water?: boolean;
+  /** Herbivores the player introduced here. */
+  herb?: number;
+  /** Predators the player introduced here. */
+  pred?: number;
 }
 
 export interface PlanetDiff {
