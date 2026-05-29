@@ -70,14 +70,21 @@ export class ShipTerminal {
     }).join('');
 
     const c = ensureContract();
-    const have = this.haveOfContract();
-    const canDeliver = have >= c.required;
-    const contractHtml = `<div style="margin:10px 0;padding:10px;border:1px solid rgba(120,160,220,0.25);border-radius:8px">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-        <div><b>📋 Contract</b><br><span style="opacity:0.8">deliver ${c.required} ${RESOURCES[c.resource]?.name ?? c.resource} — reward <b style="color:#ffd27a">${c.reward}¢</b></span><br>
-        <span style="opacity:0.6">carrying ${Math.floor(have)}/${c.required}</span></div>
-        <button data-deliver="1" style="${this.btnStyle(canDeliver)}">Deliver</button>
-      </div></div>`;
+    let contractHtml: string;
+    if (c.kind === 'bounty') {
+      contractHtml = `<div style="margin:10px 0;padding:10px;border:1px solid rgba(120,160,220,0.25);border-radius:8px">
+        <b>📋 Bounty</b><br><span style="opacity:0.8">hunt ${c.required} guardians — reward <b style="color:#ffd27a">${c.reward}¢</b></span><br>
+        <span style="opacity:0.6">progress ${c.progress}/${c.required} · completes in the field</span></div>`;
+    } else {
+      const have = this.haveOfContract();
+      const canDeliver = have >= c.required;
+      contractHtml = `<div style="margin:10px 0;padding:10px;border:1px solid rgba(120,160,220,0.25);border-radius:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <div><b>📋 Delivery</b><br><span style="opacity:0.8">deliver ${c.required} ${RESOURCES[c.resource ?? '']?.name ?? c.resource} — reward <b style="color:#ffd27a">${c.reward}¢</b></span><br>
+          <span style="opacity:0.6">carrying ${Math.floor(have)}/${c.required}</span></div>
+          <button data-deliver="1" style="${this.btnStyle(canDeliver)}">Deliver</button>
+        </div></div>`;
+    }
 
     this.el.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">

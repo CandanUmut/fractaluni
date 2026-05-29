@@ -30,6 +30,7 @@ export interface CreatureParams {
   tailSegs: number;
   tailLen: number;
   tailDrop: number; // downward arc per tail segment
+  spikes: number; // dorsal spikes (menacing guardians); 0 for herbivores
   bodyColor: RGB;
   legColor: RGB;
 }
@@ -124,6 +125,19 @@ export function creatureGeometry(p: CreatureParams): THREE.BufferGeometry {
     }
   }
 
+  // Dorsal spikes (menace).
+  if (p.spikes > 0) {
+    const spikeColor: RGB = { r: clamp01(p.bodyColor.r * 0.5 + 0.15), g: p.bodyColor.g * 0.4, b: p.bodyColor.b * 0.4 };
+    for (let i = 0; i < p.spikes; i++) {
+      const t = i / Math.max(1, p.spikes - 1);
+      const sz = lerp(p.bodyL * 0.4, -p.bodyL * 0.4, t);
+      const h = lerp(0.5, 0.2, Math.abs(t - 0.4)) * p.bodyH * 1.6;
+      const spike = new THREE.ConeGeometry(p.headR * 0.32, h, 4).toNonIndexed();
+      spike.translate(0, bodyY + p.bodyH * 0.5 + h * 0.4, sz);
+      parts.push(colorize(spike, spikeColor));
+    }
+  }
+
   // Legs.
   const pairs = Math.max(1, Math.round(p.legCount / 2));
   const lx = p.bodyW / 2 - p.legW / 2;
@@ -178,12 +192,13 @@ function bodyColorFor(pal: Palette, rng: RNG, predator: boolean): RGB {
   };
 }
 
-function paramsFromStruct(s: Struct, k: number, bodyColor: RGB): CreatureParams {
+function paramsFromStruct(s: Struct, k: number, bodyColor: RGB, spikes = 0): CreatureParams {
   return {
     bodyW: s.bodyW * k, bodyH: s.bodyH * k, bodyL: s.bodyL * k, legLen: s.legLen * k, legW: s.legW * k, headR: s.headR * k,
     legCount: s.legCount, round: s.round,
     neckSegs: s.neckSegs, neckLen: s.neckLen * k, neckRise: s.neckRise,
     tailSegs: s.tailSegs, tailLen: s.tailLen * k, tailDrop: s.tailDrop,
+    spikes,
     bodyColor,
     legColor: { r: bodyColor.r * 0.7, g: bodyColor.g * 0.7, b: bodyColor.b * 0.7 },
   };
@@ -195,10 +210,18 @@ export function speciesParams(arch: Archetype, pal: Palette, rng: RNG): Creature
   return paramsFromStruct(s, rangeFloat(rng, s.scaleMin, s.scaleMax), bodyColorFor(pal, rng, false));
 }
 
-/** A menacing predator body plan (raptor-ish, reddish, larger). */
+export const GUARDIAN_ARCHETYPES: Archetype[] = ['raptor', 'sauropod', 'beetle'];
+
+/** A menacing, spiked guardian of the given archetype (reddish, larger). */
+export function guardianParams(arch: Archetype, pal: Palette, rng: RNG): CreatureParams {
+  const s = structFor(arch);
+  const scale = arch === 'beetle' ? rangeFloat(rng, 1.6, 2.4) : rangeFloat(rng, 1.5, 2.3);
+  return paramsFromStruct(s, scale, bodyColorFor(pal, rng, true), 4 + Math.floor(rng() * 5));
+}
+
+/** Back-compat: a raptor guardian. */
 export function predatorParams(pal: Palette, rng: RNG): CreatureParams {
-  const s = structFor('raptor');
-  return paramsFromStruct(s, rangeFloat(rng, 1.4, 2.1), bodyColorFor(pal, rng, true));
+  return guardianParams('raptor', pal, rng);
 }
 
 

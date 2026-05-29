@@ -29,9 +29,13 @@ export const RESOURCES: Record<string, ResourceType> = {
   cuprite: { id: 'cuprite', name: 'Cuprite', tier: 'rare', color: 0xd07a3a, value: 14, hardness: 2 },
   sulfur: { id: 'sulfur', name: 'Sulfur', tier: 'rare', color: 0xe8d24a, value: 12, hardness: 2 },
   titanite: { id: 'titanite', name: 'Titanite', tier: 'rare', color: 0xc0c8d8, value: 18, hardness: 2 },
+  obsidian: { id: 'obsidian', name: 'Obsidian', tier: 'common', color: 0x1c1c22, value: 7, hardness: 1 },
+  biogel: { id: 'biogel', name: 'Biogel', tier: 'rare', color: 0x6fe089, value: 16, hardness: 2 },
+  helium3: { id: 'helium3', name: 'Helium-3', tier: 'rare', color: 0xbfefff, value: 22, hardness: 2 },
   iridite: { id: 'iridite', name: 'Iridite', tier: 'exotic', color: 0x9affd0, value: 40, hardness: 3 },
   voidcrystal: { id: 'voidcrystal', name: 'Void Crystal', tier: 'exotic', color: 0xb27aff, value: 55, hardness: 3 },
   pyronium: { id: 'pyronium', name: 'Pyronium', tier: 'exotic', color: 0xff5a3a, value: 70, hardness: 3 },
+  cryostone: { id: 'cryostone', name: 'Cryostone', tier: 'exotic', color: 0x7ad0ff, value: 48, hardness: 3 },
 };
 
 export interface ResourceWeight {
@@ -64,18 +68,22 @@ export function planetResources(planet: PlanetProfile, _star: StarProfile): Reso
   add('silica', b === 'desert' || b === 'arid' ? 4 : 2);
   add('ice', b === 'frozen' || b === 'tundra' || planet.waterFraction > 0.6 ? 5 : 0.5);
   add('carbon', b === 'tropical' || b === 'temperate' || b === 'oceanic' ? 4 : 1);
+  add('obsidian', b === 'molten' ? 4 : b === 'barren-rock' ? 1.5 : 0);
 
   // Rares appear on moderately harsh worlds.
   if (danger > 0.25) {
     add('cuprite', 2);
     add('sulfur', b === 'molten' || b === 'arid' ? 3 : 1);
     add('titanite', planet.gravity > 1.1 ? 3 : 1);
+    add('biogel', b === 'tropical' || b === 'oceanic' || b === 'temperate' ? 3 : 0);
+    add('helium3', planet.atmosphere < 0.2 ? 3 : 0);
   }
   // Exotics only on the harshest, most dangerous worlds.
   if (danger > 0.55) {
     add('iridite', planet.atmosphere < 0.1 ? 3 : 1);
     add('voidcrystal', b === 'frozen' ? 3 : 1);
     add('pyronium', b === 'molten' ? 4 : 0.5);
+    add('cryostone', b === 'frozen' || b === 'tundra' ? 3 : 0);
   }
   return out;
 }

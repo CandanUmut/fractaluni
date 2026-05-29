@@ -14,6 +14,7 @@ import { planetPath, loadDiff, saveDiff } from '../sim/persistence.ts';
 import { emptyDiff, type PlanetDiff } from '../sim/planetDiff.ts';
 import { BirdFlock, birdColor } from '../agents/boids.ts';
 import { AnimalHerds } from '../agents/animals.ts';
+import { FishSchool, fishColor } from '../agents/fish.ts';
 import { SkyDome } from '../render/sky.ts';
 import { Water } from '../render/water.ts';
 import { Viewmodel } from '../render/viewmodel.ts';
@@ -52,6 +53,7 @@ export class SurfaceScene implements AppScene {
   private readonly chunks: ChunkManager;
   private readonly flora: FloraManager;
   private readonly birds: BirdFlock | null;
+  private readonly fish: FishSchool | null;
   private readonly herds: AnimalHerds;
   private readonly sky: SkyDome;
   private readonly water: Water | null;
@@ -238,6 +240,14 @@ export class SurfaceScene implements AppScene {
     this.herds = new AnimalHerds(this.planet, this.planet.seed, pal, this.sampler, heightAtLocal);
     this.scene.add(this.herds.group);
 
+    // Fish school on watery worlds.
+    if (this.sampler.hasWater && !lifeless) {
+      this.fish = new FishSchool(deriveSeed(this.planet.seed, 0xf15), 44, fishColor(pal.water), this.sampler.seaLevel, heightAtLocal);
+      this.scene.add(this.fish.mesh);
+    } else {
+      this.fish = null;
+    }
+
     // Effects + weapons.
     this.scene.add(this.effects.group);
     this.scene.add(this.weaponWorld);
@@ -283,6 +293,17 @@ export class SurfaceScene implements AppScene {
       this.collect(type, amount, false);
       this.markers.showBanner(`GUARDIAN DOWN  ·  +${amount} ${type.name}`);
       audio.play('death', 0.8, this.panFor(this.feet.set(x, 0, z)));
+      // Bounty mission progress (auto-completes in the field).
+      const c = progression.contract;
+      if (c && c.kind === 'bounty') {
+        c.progress += 1;
+        if (c.progress >= c.required) {
+          progression.currency += c.reward;
+          this.markers.showBanner(`BOUNTY COMPLETE  ·  +${c.reward}¢`);
+          progression.contract = newContract();
+        }
+        saveProgression();
+      }
     };
 
     void loadDiff(this.diffKey).then((d) => {
@@ -484,13 +505,14 @@ export class SurfaceScene implements AppScene {
   private contractText(): string {
     const c = progression.contract;
     if (!c) return '';
-    const have = Math.floor(this.inventory.get(c.resource) ?? 0);
-    return `deliver ${have}/${c.required} ${RESOURCES[c.resource]?.name ?? c.resource} → ${c.reward}¢`;
+    if (c.kind === 'bounty') return `hunt ${c.progress}/${c.required} guardians → ${c.reward}¢`;
+    const have = Math.floor(this.inventory.get(c.resource!) ?? 0);
+    return `deliver ${have}/${c.required} ${RESOURCES[c.resource!]?.name ?? c.resource} → ${c.reward}¢`;
   }
 
   private deliverContract(): boolean {
     const c = progression.contract;
-    if (!c) return false;
+    if (!c || c.kind !== 'delivery' || !c.resource) return false;
     const have = this.inventory.get(c.resource) ?? 0;
     if (have < c.required) return false;
     this.inventory.set(c.resource, have - c.required);
@@ -569,12 +591,14 @@ export class SurfaceScene implements AppScene {
       this.originCX += sx;
       this.originCZ += sz;
       this.birds?.shift(sx * CHUNK_SIZE, sz * CHUNK_SIZE);
+      this.fish?.shift(sx * CHUNK_SIZE, sz * CHUNK_SIZE);
       this.herds.shift(sx * CHUNK_SIZE, sz * CHUNK_SIZE);
     }
 
     this.chunks.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
     this.flora.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
     this.birds?.update(sdt, this.camera.position);
+    this.fish?.update(sdt, this.camera.position);
     this.herds.update(sdt, this.camera.position);
     this.sky.follow(this.camera.position);
     this.updateDayNight(dt);
@@ -778,6 +802,7 @@ export class SurfaceScene implements AppScene {
     this.chunks.dispose();
     this.flora.dispose();
     this.birds?.dispose();
+    this.fish?.dispose();
     this.herds.dispose();
     this.sky.dispose();
     this.water?.dispose();

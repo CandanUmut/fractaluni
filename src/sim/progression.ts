@@ -7,9 +7,11 @@ import { RESOURCES } from '../universe/resources.ts';
 // and tougher guardians.
 
 export interface Contract {
-  resource: string;
+  kind: 'delivery' | 'bounty';
+  resource?: string; // delivery only
   required: number;
   reward: number;
+  progress: number; // bounty kills so far
 }
 
 export interface Progression {
@@ -26,12 +28,16 @@ export const progression: Progression = { currency: 0, drill: 1, scanner: 0, ene
 
 const CONTRACT_POOL = ['ferrite', 'silica', 'ice', 'carbon', 'cuprite', 'sulfur', 'titanite'];
 
-/** Generate a fresh delivery contract (gameplay meta — non-deterministic is fine). */
+/** Generate a fresh contract — delivery or guardian bounty (non-deterministic). */
 export function newContract(): Contract {
-  const resource = CONTRACT_POOL[Math.floor(Math.random() * CONTRACT_POOL.length)]!;
-  const required = 20 + Math.floor(Math.random() * 5) * 10; // 20..60
-  const reward = Math.round(required * RESOURCES[resource]!.value * 1.7);
-  return { resource, required, reward };
+  if (Math.random() < 0.5) {
+    const resource = CONTRACT_POOL[Math.floor(Math.random() * CONTRACT_POOL.length)]!;
+    const required = 20 + Math.floor(Math.random() * 5) * 10; // 20..60
+    const reward = Math.round(required * RESOURCES[resource]!.value * 1.7);
+    return { kind: 'delivery', resource, required, reward, progress: 0 };
+  }
+  const required = 3 + Math.floor(Math.random() * 4); // 3..6 guardians
+  return { kind: 'bounty', required, reward: required * 75, progress: 0 };
 }
 
 export function ensureContract(): Contract {

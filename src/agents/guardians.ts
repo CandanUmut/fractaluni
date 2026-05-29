@@ -3,7 +3,7 @@ import { deriveSeed, hashString } from '../core/hash.ts';
 import { makeRNG } from '../core/rng.ts';
 import { CHUNK_SIZE, type TerrainSampler } from '../gen/terrain.ts';
 import { chunkNodeSpecs } from '../gen/nodes.ts';
-import { creatureGeometry, predatorParams } from './animals.ts';
+import { creatureGeometry, guardianParams, GUARDIAN_ARCHETYPES, type Archetype } from './animals.ts';
 import type { ResourceType, ResourceWeight } from '../universe/resources.ts';
 import type { Palette } from '../palette/index.ts';
 import type { Effects } from '../render/effects.ts';
@@ -54,6 +54,7 @@ export class GuardianManager {
   private readonly diff: PlanetDiff;
   private readonly palette: ResourceWeight[];
   private readonly pal: Palette;
+  private readonly arch: Archetype;
   private loadedKey = ' ';
 
   constructor(planetSeed: number, sampler: TerrainSampler, diff: PlanetDiff, palette: ResourceWeight[], pal: Palette) {
@@ -62,6 +63,8 @@ export class GuardianManager {
     this.diff = diff;
     this.palette = palette;
     this.pal = pal;
+    // One guardian species per planet (varies between worlds).
+    this.arch = GUARDIAN_ARCHETYPES[Math.floor(makeRNG(deriveSeed(planetSeed, 0x6a4d2))() * GUARDIAN_ARCHETYPES.length)]!;
   }
 
   invalidate(): void {
@@ -96,12 +99,11 @@ export class GuardianManager {
 
   private spawn(key: string, nodeX: number, nodeZ: number, type: ResourceType, i: number): void {
     const rng = makeRNG(deriveSeed(this.planetSeed, 0x6a4d, hashString(key)));
-    const params = predatorParams(this.pal, rng);
-    const geo = creatureGeometry(params);
+    const geo = creatureGeometry(guardianParams(this.arch, this.pal, rng));
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.7 });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = true;
-    mesh.scale.setScalar(type.tier === 'exotic' ? 2.4 : 1.9);
+    mesh.scale.setScalar(type.tier === 'exotic' ? 1.3 : 1.0); // geometry is already large
     const ang = (i / 2) * Math.PI * 2 + rng() * 2;
     const ax = nodeX + Math.cos(ang) * 5;
     const az = nodeZ + Math.sin(ang) * 5;
@@ -181,7 +183,7 @@ export class GuardianManager {
       const lift = (g.flash > 0 ? Math.sin(g.flash * 12) * 0.3 : 0) + wind * 0.5;
       g.mesh.position.set(g.ax - originCX * CHUNK_SIZE, gy + lift, g.az - originCZ * CHUNK_SIZE);
       g.mesh.rotation.set(wind * -0.4, g.heading, 0); // rear up as it winds up
-      const base = g.lootType.tier === 'exotic' ? 2.4 : 1.9;
+      const base = g.lootType.tier === 'exotic' ? 1.3 : 1.0;
       g.mesh.scale.setScalar(base * (1 + g.flash * 0.15 + wind * 0.3));
       g.mat.emissive.setRGB(Math.max(g.flash, wind * 0.7), 0, 0);
     }
