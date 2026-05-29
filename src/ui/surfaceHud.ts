@@ -13,6 +13,7 @@ export interface SurfaceHudData {
   scanRange: number;
   nearShip: boolean;
   hint: string;
+  contract: string;
 }
 
 export class SurfaceHud {
@@ -73,6 +74,7 @@ export class SurfaceHud {
       `<div style="font-size:15px;color:#ffd27a;font-weight:700">${d.currency}¢</div>` +
       `<div style="margin-top:6px">${d.weapon}</div>` +
       `<div style="opacity:0.7;margin-top:2px">drill T${d.drillTier} · scan ${d.scanRange}m</div>` +
+      (d.contract ? `<div style="opacity:0.8;margin-top:4px;color:#bfe0ff">📋 ${d.contract}</div>` : '') +
       `<div style="opacity:0.55;margin-top:6px">[1]gun [2]bomb [3]drill · [R]scan · [B]ship</div>`;
 
     this.hint.textContent = d.hint;

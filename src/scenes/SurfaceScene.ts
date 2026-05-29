@@ -24,7 +24,7 @@ import { Reticle } from '../ui/reticle.ts';
 import { Markers, type MarkerSpec } from '../ui/markers.ts';
 import { SurfaceHud } from '../ui/surfaceHud.ts';
 import { Objectives } from '../ui/objectives.ts';
-import { progression, energyMaxFor, cargoCapFor, scanRangeFor, gunDamageFor, drillTierFor, saveProgression } from '../sim/progression.ts';
+import { progression, energyMaxFor, cargoCapFor, scanRangeFor, gunDamageFor, drillTierFor, saveProgression, ensureContract, newContract } from '../sim/progression.ts';
 import { settings } from '../ui/settings.ts';
 import { makeWeapons, type HeldItem, type WeaponCtx, type RayHit } from '../weapons/items.ts';
 import { audio } from '../audio/audio.ts';
@@ -252,6 +252,9 @@ export class SurfaceScene implements AppScene {
     this.objectives = new Objectives(hudRoot);
     this.terminal.onSell = () => this.sellCargo();
     this.terminal.onChange = () => this.applyProgression();
+    this.terminal.onDeliver = () => this.deliverContract();
+    this.terminal.haveOfContract = () => this.inventory.get(progression.contract?.resource ?? '') ?? 0;
+    ensureContract();
     this.energyMax = energyMaxFor();
     this.energy = this.energyMax;
     // Guardians defend valuable deposits.
@@ -462,6 +465,27 @@ export class SurfaceScene implements AppScene {
     return v;
   }
 
+  private contractText(): string {
+    const c = progression.contract;
+    if (!c) return '';
+    const have = Math.floor(this.inventory.get(c.resource) ?? 0);
+    return `deliver ${have}/${c.required} ${RESOURCES[c.resource]?.name ?? c.resource} → ${c.reward}¢`;
+  }
+
+  private deliverContract(): boolean {
+    const c = progression.contract;
+    if (!c) return false;
+    const have = this.inventory.get(c.resource) ?? 0;
+    if (have < c.required) return false;
+    this.inventory.set(c.resource, have - c.required);
+    this.cargoUsed = Math.max(0, this.cargoUsed - c.required);
+    progression.currency += c.reward;
+    this.markers.showBanner(`CONTRACT COMPLETE  ·  +${c.reward}¢`);
+    progression.contract = newContract();
+    saveProgression();
+    return true;
+  }
+
   /** Re-apply derived stats after an upgrade purchase. */
   private applyProgression(): void {
     this.energyMax = energyMaxFor();
@@ -651,6 +675,7 @@ export class SurfaceScene implements AppScene {
       scanRange: this.scanRange,
       nearShip: this.nearShip,
       hint,
+      contract: this.contractText(),
     });
     this.shud.setVisible(!this.terminal.visible);
 

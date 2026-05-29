@@ -1,4 +1,5 @@
-import { progression, UPGRADES, priceOf, isMaxed, buy } from '../sim/progression.ts';
+import { progression, UPGRADES, priceOf, isMaxed, buy, ensureContract } from '../sim/progression.ts';
+import { RESOURCES } from '../universe/resources.ts';
 
 // The ship's trade + upgrade terminal (DOM overlay). Sell cargo for currency and
 // buy higher-tier gear, which gates access to richer/more-dangerous resources.
@@ -11,6 +12,10 @@ export class ShipTerminal {
   onSell: () => number = () => 0;
   /** Called after any change so the scene can re-apply derived stats. */
   onChange: () => void = () => {};
+  /** Try to fulfil the active contract from cargo; returns true on success. */
+  onDeliver: () => boolean = () => false;
+  /** How much of the contract resource the player is carrying. */
+  haveOfContract: () => number = () => 0;
 
   constructor(root: HTMLElement) {
     this.el = document.createElement('div');
@@ -64,14 +69,25 @@ export class ShipTerminal {
         <div>${btn}</div></div>`;
     }).join('');
 
+    const c = ensureContract();
+    const have = this.haveOfContract();
+    const canDeliver = have >= c.required;
+    const contractHtml = `<div style="margin:10px 0;padding:10px;border:1px solid rgba(120,160,220,0.25);border-radius:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <div><b>📋 Contract</b><br><span style="opacity:0.8">deliver ${c.required} ${RESOURCES[c.resource]?.name ?? c.resource} — reward <b style="color:#ffd27a">${c.reward}¢</b></span><br>
+        <span style="opacity:0.6">carrying ${Math.floor(have)}/${c.required}</span></div>
+        <button data-deliver="1" style="${this.btnStyle(canDeliver)}">Deliver</button>
+      </div></div>`;
+
     this.el.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
         <div style="font-size:16px;font-weight:700">⛭ SHIP TERMINAL</div>
         <div>currency: <b style="color:#ffd27a">${progression.currency}¢</b></div>
       </div>
-      <button data-sell="1" style="${this.btnStyle(true)};width:100%;margin-bottom:12px">
+      <button data-sell="1" style="${this.btnStyle(true)};width:100%;margin-bottom:6px">
         Sell all cargo (<span id="sellv">…</span>¢)
       </button>
+      ${contractHtml}
       <div style="border-top:1px solid rgba(120,160,220,0.2);padding-top:8px">${rows}</div>
       <div style="opacity:0.6;margin-top:12px;text-align:center">press B to close</div>
     `;
@@ -91,6 +107,13 @@ export class ShipTerminal {
       this.onSell();
       this.onChange();
       this.render();
+    });
+    const delBtn = this.el.querySelector('button[data-deliver]');
+    delBtn?.addEventListener('click', () => {
+      if (this.onDeliver()) {
+        this.onChange();
+        this.render();
+      }
     });
   }
 

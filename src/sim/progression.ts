@@ -1,9 +1,16 @@
 import { loadProgress, saveProgress } from './persistence.ts';
+import { RESOURCES } from '../universe/resources.ts';
 
 // Global player progression — currency + equipment tiers — persisted in
 // IndexedDB (not per-planet). This is the scarcity/gate that pulls the player
 // toward richer, more dangerous worlds: better tools unlock higher-hardness ore
 // and tougher guardians.
+
+export interface Contract {
+  resource: string;
+  required: number;
+  reward: number;
+}
 
 export interface Progression {
   currency: number;
@@ -12,9 +19,28 @@ export interface Progression {
   energy: number; // 0.. — energy capacity
   cargo: number; // 0.. — cargo capacity
   gun: number; // 0.. — weapon damage
+  contract: Contract | null;
 }
 
-export const progression: Progression = { currency: 0, drill: 1, scanner: 0, energy: 0, cargo: 0, gun: 0 };
+export const progression: Progression = { currency: 0, drill: 1, scanner: 0, energy: 0, cargo: 0, gun: 0, contract: null };
+
+const CONTRACT_POOL = ['ferrite', 'silica', 'ice', 'carbon', 'cuprite', 'sulfur', 'titanite'];
+
+/** Generate a fresh delivery contract (gameplay meta — non-deterministic is fine). */
+export function newContract(): Contract {
+  const resource = CONTRACT_POOL[Math.floor(Math.random() * CONTRACT_POOL.length)]!;
+  const required = 20 + Math.floor(Math.random() * 5) * 10; // 20..60
+  const reward = Math.round(required * RESOURCES[resource]!.value * 1.7);
+  return { resource, required, reward };
+}
+
+export function ensureContract(): Contract {
+  if (!progression.contract) {
+    progression.contract = newContract();
+    saveProgression();
+  }
+  return progression.contract;
+}
 
 export async function loadProgression(): Promise<void> {
   const p = await loadProgress<Partial<Progression>>();
@@ -32,10 +58,12 @@ export const scanRangeFor = (): number => 280 + progression.scanner * 120;
 export const gunDamageFor = (): number => 12 + progression.gun * 8;
 export const drillTierFor = (): number => progression.drill;
 
+type UpgradeField = 'drill' | 'scanner' | 'energy' | 'cargo' | 'gun';
+
 export interface UpgradeDef {
   id: string;
   name: string;
-  field: keyof Omit<Progression, 'currency'>;
+  field: UpgradeField;
   max: number;
   basePrice: number;
   detail: () => string;

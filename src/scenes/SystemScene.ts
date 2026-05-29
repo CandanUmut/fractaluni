@@ -4,6 +4,7 @@ import type { BloomSettings } from '../render/composer.ts';
 import { FlyController } from './controls/FlyController.ts';
 import { Spaceship } from '../render/spaceship.ts';
 import { deriveStarAt, deriveSystem } from '../universe/index.ts';
+import { planetResources, planetDanger } from '../universe/resources.ts';
 import { biomePalette } from '../palette/index.ts';
 import { rgbToHex, scaleRGB } from '../core/color.ts';
 import { clamp, TAU } from '../core/math.ts';
@@ -188,14 +189,47 @@ export class SystemScene implements AppScene {
     return pts;
   }
 
+  private chartEl: HTMLDivElement | null = null;
+
   private onKeyDown = (e: KeyboardEvent): void => {
     if ((e.key === 'Backspace' || e.key === 'b' || e.key === 'B') && this.onBack) {
       e.preventDefault();
       this.onBack();
     } else if (e.key === 'Enter' && this.candidate && this.onSelectPlanet) {
       this.onSelectPlanet(this.candidate.profile.index);
+    } else if (e.key === 'm' || e.key === 'M') {
+      this.toggleChart();
     }
   };
+
+  /** System chart: an orbital survey of every planet (resources + danger). */
+  private toggleChart(): void {
+    if (this.chartEl) {
+      this.chartEl.remove();
+      this.chartEl = null;
+      return;
+    }
+    const root = document.getElementById('hud') ?? document.body;
+    const el = document.createElement('div');
+    el.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:520px;max-width:94vw;max-height:80vh;overflow:auto;padding:18px 20px;background:rgba(10,16,28,0.95);border:1px solid rgba(120,160,220,0.4);border-radius:10px;font:12px ui-monospace,monospace;color:#cfe3ff;pointer-events:auto';
+    const rows = this.bodies
+      .map((b) => {
+        const p = b.profile;
+        const danger = planetDanger(p);
+        const stars = '★'.repeat(1 + Math.round(danger * 4));
+        const res = planetResources(p, this.star).sort((a, c) => c.weight - a.weight).slice(0, 4).map((r) => r.type.name).join(', ');
+        return `<div style="display:flex;justify-content:space-between;gap:12px;margin:6px 0;padding-bottom:6px;border-bottom:1px solid rgba(120,160,220,0.12)">
+          <div><b>#${p.index} ${p.biome}</b>${p.inHabitableZone ? ' <span style="color:#9affd0">HZ</span>' : ''}<br>
+          <span style="opacity:0.7">${p.orbitalRadius.toFixed(2)} AU · ${p.surfaceTemp.toFixed(0)}K · ${p.gravity.toFixed(2)}g</span></div>
+          <div style="text-align:right"><span style="color:#ff8a5a">${stars}</span><br><span style="opacity:0.8">${res || 'barren'}</span></div>
+        </div>`;
+      })
+      .join('');
+    el.innerHTML = `<div style="font-size:16px;font-weight:700;margin-bottom:8px">⛭ SYSTEM CHART — star ${this.star.spectralClass}</div>${rows}<div style="opacity:0.6;margin-top:10px;text-align:center">M to close · fly to a planet and Enter to descend</div>`;
+    root.appendChild(el);
+    this.chartEl = el;
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
 
   update(dt: number): void {
     this.time += dt;
@@ -246,6 +280,7 @@ export class SystemScene implements AppScene {
     window.removeEventListener('keydown', this.onKeyDown);
     this.controller.dispose();
     this.ship.dispose();
+    this.chartEl?.remove();
     for (const d of this.disposables) d.dispose();
   }
 
@@ -257,12 +292,26 @@ export class SystemScene implements AppScene {
     ];
     if (!this.controller.isLocked) lines.push('click to capture mouse · WASD+RF fly · Q/E roll · Shift warp');
     lines.push('[Backspace] back to galaxy');
+    lines.push('[M] system chart (orbital survey)');
     if (this.candidate) {
       const p = this.candidate.profile;
       lines.push(
         `▶ planet #${p.index} ${p.biome}  ${p.surfaceTemp.toFixed(0)}K${p.inHabitableZone ? ' (HZ)' : ''} — Enter to descend`,
       );
+      lines.push(`   survey: ${this.surveyText(p)}`);
     }
     return lines;
+  }
+
+  /** Orbital survey of a planet: danger + likely resources (derived). */
+  private surveyText(p: PlanetProfile): string {
+    const danger = planetDanger(p);
+    const stars = '★'.repeat(1 + Math.round(danger * 4)) + '☆'.repeat(4 - Math.round(danger * 4));
+    const res = planetResources(p, this.star)
+      .sort((a, b) => b.weight - a.weight)
+      .slice(0, 3)
+      .map((r) => r.type.name)
+      .join(', ');
+    return `danger ${stars} · ${res || 'barren'}`;
   }
 }
