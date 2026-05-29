@@ -1,6 +1,7 @@
 import { SceneManager } from './scenes/SceneManager.ts';
 import { PlaceholderScene } from './scenes/PlaceholderScene.ts';
 import { GalaxyScene } from './scenes/GalaxyScene.ts';
+import { SystemScene } from './scenes/SystemScene.ts';
 import type { AppScene } from './scenes/AppScene.ts';
 import { Hud } from './ui/hud.ts';
 import { readState, writeState, type Location, type UniverseState } from './ui/urlState.ts';
@@ -24,8 +25,13 @@ const universeSeed = hashString(state.seed);
 
 function sceneForLocation(loc: Location): AppScene {
   switch (loc.kind) {
-    case 'system':
-      return new PlaceholderScene('system', 0xffcf6f, 0x080611);
+    case 'system': {
+      const system = new SystemScene(universeSeed, loc.cell, loc.star, manager.domElement);
+      system.onSelectPlanet = (planet) =>
+        goTo({ kind: 'surface', cell: loc.cell, star: loc.star, planet });
+      system.onBack = () => goTo({ kind: 'galaxy' });
+      return system;
+    }
     case 'surface':
       return new PlaceholderScene('surface', 0x7fd08a, 0x0a1410);
     case 'galaxy':
