@@ -6,6 +6,11 @@ import { deriveStarAt, derivePlanet } from '../universe/index.ts';
 import { biomePalette } from '../palette/index.ts';
 import { makeTerrain, ChunkManager, CHUNK_SIZE } from '../gen/terrain.ts';
 import { FloraManager } from '../gen/flora.ts';
+import { NodeManager } from '../gen/nodes.ts';
+import { RESOURCES, type ResourceType } from '../universe/resources.ts';
+import { Compass, type CompassPing } from '../ui/compass.ts';
+import { planetPath, loadDiff, saveDiff } from '../sim/persistence.ts';
+import { emptyDiff, type PlanetDiff } from '../sim/planetDiff.ts';
 import { BirdFlock, birdColor } from '../agents/boids.ts';
 import { AnimalHerds } from '../agents/animals.ts';
 import { SkyDome } from '../render/sky.ts';
@@ -54,6 +59,20 @@ export class SurfaceScene implements AppScene {
   private readonly raycaster = new THREE.Raycaster();
   private readonly aimDir = new THREE.Vector3();
   private readonly shake2 = new THREE.Vector2();
+
+  // v3 Phase C: deposits, extraction, compass, inventory, persistence.
+  private readonly diffKey: string;
+  private readonly diff: PlanetDiff = emptyDiff();
+  private readonly nodes: NodeManager;
+  private readonly compass: Compass;
+  private readonly inventory = new Map<string, number>();
+  private cargoUsed = 0;
+  private cargoCap = 120;
+  private drillTier = 1;
+  private readonly scanRange = 280;
+  private readonly drillReach = 9;
+  private lastMsg = '';
+  private pickupT = 0;
 
   // Floating origin on XZ (Y stays near the ground).
   private originCX = 0;
@@ -138,6 +157,19 @@ export class SurfaceScene implements AppScene {
     this.viewmodel.setItem(this.weapons[0]!.object);
     this.weapons[0]!.equip();
 
+    // Deposits + compass + persisted depletion diff.
+    this.diffKey = planetPath(universeSeed, cell, starIndex, planetIndex);
+    this.nodes = new NodeManager(this.planet, this.planet.seed, this.star, this.sampler, this.diff);
+    this.scene.add(this.nodes.group);
+    const hudRoot = document.getElementById('hud') ?? document.body;
+    this.compass = new Compass(hudRoot);
+    void loadDiff(this.diffKey).then((d) => {
+      if (d) {
+        for (const [k, e] of d.cells) this.diff.cells.set(k, e);
+        this.nodes.invalidate(); // re-stream so already-depleted nodes stay gone
+      }
+    });
+
     // Prime the full view radius so the surface is present on the first frame.
     let guard = 0;
     while (!this.chunks.fullyLoaded && guard++ < 500) this.chunks.update(0, 0, 0, 0);
@@ -146,6 +178,7 @@ export class SurfaceScene implements AppScene {
     dom.addEventListener('pointerdown', this.onPointerDown);
     window.addEventListener('pointerup', this.onPointerUp);
     dom.addEventListener('wheel', this.onWheel, { passive: true });
+    window.addEventListener('pagehide', this.onPageHide);
   }
 
   private get current(): HeldItem {
@@ -156,13 +189,50 @@ export class SurfaceScene implements AppScene {
     this.raycaster.set(origin, dir);
     this.raycaster.far = far;
     this.raycaster.near = 0;
-    const hits = this.raycaster.intersectObjects(this.chunks.group.children, false);
+    // Nodes first (few; lets the drill/bomb target deposits over terrain behind).
+    const targets = this.nodes.meshes();
+    for (const c of this.chunks.group.children) targets.push(c);
+    const hits = this.raycaster.intersectObjects(targets, false);
     if (hits.length === 0) return null;
     const h = hits[0]!;
     const normal = new THREE.Vector3(0, 1, 0);
     if (h.face) normal.copy(h.face.normal).transformDirection(h.object.matrixWorld);
     return { point: h.point.clone(), normal, distance: h.distance, object: h.object };
   };
+
+  private readonly onHit = (hit: RayHit, kind: 'gun' | 'bomb' | 'drill', dt: number): void => {
+    const node = NodeManager.nodeOf(hit.object);
+    if (!node) return;
+    if (kind === 'drill') {
+      if (this.drillTier >= node.type.hardness) {
+        const r = this.nodes.extract(node, 26 * dt);
+        this.collect(node.type, r.gained, r.depleted);
+      } else {
+        this.lastMsg = `${node.type.name}: too hard — needs drill tier ${node.type.hardness} (or crack it with a bomb)`;
+      }
+    } else if (kind === 'bomb') {
+      const r = this.nodes.extract(node, node.maxRichness * 0.4); // explosive cracking
+      this.collect(node.type, r.gained, r.depleted);
+    }
+  };
+
+  private collect(type: ResourceType, amount: number, depleted: boolean): void {
+    if (amount <= 0) return;
+    const room = this.cargoCap - this.cargoUsed;
+    if (room <= 0) {
+      this.lastMsg = 'cargo full — return to ship to sell';
+      return;
+    }
+    const got = Math.min(amount, room);
+    this.inventory.set(type.id, (this.inventory.get(type.id) ?? 0) + got);
+    this.cargoUsed += got;
+    if (this.pickupT <= 0) {
+      this.pickupT = 0.25;
+      audio.play(depleted ? 'extract' : 'pickup', 0.6);
+    }
+    this.lastMsg = `+${got.toFixed(0)} ${type.name} (cargo ${this.cargoUsed.toFixed(0)}/${this.cargoCap})`;
+    if (depleted) saveDiff(this.diffKey, this.diff);
+  }
 
   private buildCtx(): WeaponCtx {
     this.camera.getWorldDirection(this.aimDir);
@@ -172,6 +242,7 @@ export class SurfaceScene implements AppScene {
       raycast: this.raycast,
       effects: this.effects,
       kick: (b, u, r) => this.viewmodel.addKick(b, u, r),
+      onHit: this.onHit,
     };
   }
 
@@ -209,7 +280,15 @@ export class SurfaceScene implements AppScene {
       this.switchWeapon(1);
     } else if (e.key === '3') {
       this.switchWeapon(2);
+    } else if (e.key === 'r' || e.key === 'R') {
+      const n = this.nodes.nearby(this.originCX, this.originCZ, this.camera.position.x, this.camera.position.z, this.scanRange).length;
+      this.lastMsg = `scan: ${n} deposit${n === 1 ? '' : 's'} within scanner range`;
+      audio.play('pickup', 0.5);
     }
+  };
+
+  private readonly onPageHide = (): void => {
+    saveDiff(this.diffKey, this.diff);
   };
 
   update(dt: number): void {
@@ -237,9 +316,26 @@ export class SurfaceScene implements AppScene {
     this.sky.follow(this.camera.position);
     if (this.water) this.water.update(sdt, this.camera.position, this.sampler.seaLevel);
 
+    // Deposits stream around the player.
+    this.nodes.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
+
     // Weapons (aim from the clean camera orientation before shake).
     this.current.update(sdt, this.buildCtx());
     this.effects.update(dt); // real dt so hit-stop can elapse
+    if (this.pickupT > 0) this.pickupT -= dt;
+
+    // Compass: nearby deposits by relative bearing.
+    const fx = this.aimDir.x;
+    const fz = this.aimDir.z;
+    const pings: CompassPing[] = this.nodes
+      .nearby(this.originCX, this.originCZ, this.camera.position.x, this.camera.position.z, this.scanRange)
+      .map(({ node, dx, dz, dist }) => ({
+        angle: Math.atan2(fx * dz - fz * dx, fx * dx + fz * dz),
+        dist,
+        color: node.type.color,
+        near: dist < this.drillReach,
+      }));
+    this.compass.render(pings);
 
     // First-person viewmodel sway/bob.
     const sway = this.controller.sway;
@@ -275,9 +371,13 @@ export class SurfaceScene implements AppScene {
     this.dom.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointerup', this.onPointerUp);
     this.dom.removeEventListener('wheel', this.onWheel);
+    window.removeEventListener('pagehide', this.onPageHide);
+    saveDiff(this.diffKey, this.diff); // persist depletion on leave
     audio.stopLoop();
     for (const w of this.weapons) w.dispose();
     this.effects.dispose();
+    this.nodes.dispose();
+    this.compass.dispose();
     this.controller.dispose();
     this.chunks.dispose();
     this.flora.dispose();
@@ -298,8 +398,18 @@ export class SurfaceScene implements AppScene {
     if (!this.controller.isLocked) {
       lines.push('click to capture mouse · WASD move · Shift sprint · Space jump/jetpack');
     }
-    lines.push(`weapon: ${this.current.name}  ·  [1] gun  [2] bomb  [3] drill  (wheel to cycle) · LMB use`);
+    lines.push(`weapon: ${this.current.name}  ·  [1] gun  [2] bomb  [3] drill  · LMB use · [R] scan`);
+    lines.push(`cargo ${this.cargoUsed.toFixed(0)}/${this.cargoCap}${this.inventoryText()}`);
+    if (this.lastMsg) lines.push(`» ${this.lastMsg}`);
     lines.push('[T] take off to system');
     return lines;
+  }
+
+  private inventoryText(): string {
+    const parts: string[] = [];
+    for (const [id, amt] of this.inventory) {
+      if (amt > 0) parts.push(`${RESOURCES[id]?.name ?? id} ${amt.toFixed(0)}`);
+    }
+    return parts.length ? `  ·  ${parts.join(' · ')}` : '';
   }
 }

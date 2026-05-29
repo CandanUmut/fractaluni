@@ -15,11 +15,11 @@ describe('planet diff', () => {
   test('empty diff is empty and serializes round-trip', () => {
     const d = emptyDiff();
     expect(isEmpty(d)).toBe(true);
-    d.cells.set('1,2', { marker: true });
+    d.cells.set('1,2,0', { depleted: true });
     d.lastVisited = 42;
     const round = deserialize(serialize(d));
     expect(round.lastVisited).toBe(42);
-    expect(round.cells.get('1,2')?.marker).toBe(true);
+    expect(round.cells.get('1,2,0')?.depleted).toBe(true);
     expect(isEmpty(round)).toBe(false);
   });
 

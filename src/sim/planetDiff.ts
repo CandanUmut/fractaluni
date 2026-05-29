@@ -8,20 +8,13 @@
 /** Sim grid resolution in world units (low-res, per the v2 "fields" rule). */
 export const SIM_CELL = 16;
 
-/** Per-cell edits relative to baseline — the player's footprint on a planet. */
+/** Per-key edits relative to baseline — the player's footprint on a planet.
+ *  Keyed by deposit-node key (`<cx>,<cz>,<i>`) or guardian key. */
 export interface CellEdit {
-  /** A player-placed marker (Phase A plumbing proof). */
-  marker?: boolean;
-  /** Player seeded vegetation here (a lasting growth source). */
-  planted?: boolean;
-  /** Player cleared vegetation here. */
-  cleared?: boolean;
-  /** Player dug a water source here (a pond). */
-  water?: boolean;
-  /** Herbivores the player introduced here. */
-  herb?: number;
-  /** Predators the player introduced here. */
-  pred?: number;
+  /** A deposit node the player mined out — stays gone on return. */
+  depleted?: boolean;
+  /** A guardian the player killed — stays dead on return. */
+  guardianDead?: boolean;
 }
 
 export interface PlanetDiff {
