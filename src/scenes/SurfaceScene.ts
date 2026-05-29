@@ -5,6 +5,8 @@ import { deriveStarAt, derivePlanet } from '../universe/index.ts';
 import { biomePalette } from '../palette/index.ts';
 import { makeTerrain, ChunkManager, CHUNK_SIZE } from '../gen/terrain.ts';
 import { FloraManager } from '../gen/flora.ts';
+import { BirdFlock, birdColor } from '../agents/boids.ts';
+import { AnimalHerds } from '../agents/animals.ts';
 import { SkyDome } from '../render/sky.ts';
 import { Water } from '../render/water.ts';
 import { SurfaceController } from './controls/SurfaceController.ts';
@@ -28,6 +30,8 @@ export class SurfaceScene implements AppScene {
   private readonly planet: PlanetProfile;
   private readonly chunks: ChunkManager;
   private readonly flora: FloraManager;
+  private readonly birds: BirdFlock | null;
+  private readonly herds: AnimalHerds;
   private readonly sky: SkyDome;
   private readonly water: Water | null;
   private readonly controller: SurfaceController;
@@ -97,6 +101,17 @@ export class SurfaceScene implements AppScene {
     this.controller.gravity = -32 * clamp(this.planet.gravity, 0.4, 2.2);
     this.controller.placeOnGround();
 
+    // Fauna (seeded per planet). Lifeless biomes get neither.
+    const lifeless = this.planet.biome === 'molten' || this.planet.biome === 'barren-rock';
+    if (!lifeless) {
+      this.birds = new BirdFlock(deriveSeed(this.planet.seed, 0xb1d5), 60, birdColor(pal.foliage), heightAtLocal);
+      this.scene.add(this.birds.mesh);
+    } else {
+      this.birds = null;
+    }
+    this.herds = new AnimalHerds(this.planet, this.planet.seed, pal, this.sampler, heightAtLocal);
+    this.scene.add(this.herds.group);
+
     // Prime the full view radius synchronously during the descent transition so
     // the surface is fully present on the first rendered frame (no pop-in burst).
     let guard = 0;
@@ -125,10 +140,15 @@ export class SurfaceScene implements AppScene {
       this.camera.position.z -= sz * CHUNK_SIZE;
       this.originCX += sx;
       this.originCZ += sz;
+      // Keep dynamic agents in place relative to the world after the shift.
+      this.birds?.shift(sx * CHUNK_SIZE, sz * CHUNK_SIZE);
+      this.herds.shift(sx * CHUNK_SIZE, sz * CHUNK_SIZE);
     }
 
     this.chunks.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
     this.flora.update(this.originCX, this.originCZ, this.originCX, this.originCZ);
+    this.birds?.update(dt, this.camera.position);
+    this.herds.update(dt, this.camera.position);
     this.sky.follow(this.camera.position);
     if (this.water) this.water.update(dt, this.camera.position, this.sampler.seaLevel);
   }
@@ -143,6 +163,8 @@ export class SurfaceScene implements AppScene {
     this.controller.dispose();
     this.chunks.dispose();
     this.flora.dispose();
+    this.birds?.dispose();
+    this.herds.dispose();
     this.sky.dispose();
     this.water?.dispose();
   }
