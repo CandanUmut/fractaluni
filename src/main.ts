@@ -8,6 +8,7 @@ import { Transition } from './ui/transition.ts';
 import { readState, writeState, type Location, type UniverseState } from './ui/urlState.ts';
 import { hashString } from './core/hash.ts';
 import { profileToLines } from './universe/debug.ts';
+import { advanceWorldClock } from './sim/worldClock.ts';
 
 const appEl = document.getElementById('app')!;
 const hudEl = document.getElementById('hud')!;
@@ -121,6 +122,7 @@ function frame(now: number): void {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
 
+  advanceWorldClock(dt);
   manager.update(dt);
   manager.render();
 

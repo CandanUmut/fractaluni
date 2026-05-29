@@ -115,6 +115,17 @@ describe('ecosystem fields', () => {
     expect(ring(dry)).toBeGreaterThan(before);
   });
 
+  test('coarse catch-up steps stay bounded (no blow-up)', () => {
+    const eco = makeEco();
+    for (let t = 0; t < 800; t++) eco.step(0.5); // the catch-up step size
+    const finite = (f: Float32Array): boolean => f.every((v) => Number.isFinite(v) && v >= 0);
+    expect(finite(eco.vegetation)).toBe(true);
+    expect(finite(eco.herbivore)).toBe(true);
+    expect(finite(eco.predator)).toBe(true);
+    expect(Math.max(...eco.herbivore)).toBeLessThanOrEqual(8.001);
+    expect(Math.max(...eco.predator)).toBeLessThanOrEqual(4.001);
+  });
+
   test('simulation is deterministic', () => {
     const a = makeEco();
     const b = makeEco();

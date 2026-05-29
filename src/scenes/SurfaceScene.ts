@@ -17,6 +17,7 @@ import { emptyDiff, cellKeyOf, cellCenter, parseCellKey, SIM_CELL, type PlanetDi
 import { Ecosystem } from '../sim/ecosystem.ts';
 import { DynamicFlora } from '../gen/dynamicFlora.ts';
 import { Survival } from '../sim/survival.ts';
+import { worldClock } from '../sim/worldClock.ts';
 import { FieldOverlay } from '../ui/fieldOverlay.ts';
 import type { CellEdit } from '../sim/planetDiff.ts';
 import { clamp, lerp, DEG2RAD, TAU } from '../core/math.ts';
@@ -56,7 +57,6 @@ export class SurfaceScene implements AppScene {
   // v2 Phase A: sparse persistent diff over the pure baseline.
   private readonly diffKey: string;
   private diff: PlanetDiff = emptyDiff();
-  private elapsed = 0; // in-world seconds this visit
   private readonly markerGroup = new THREE.Group();
   private readonly markerGeo: THREE.CylinderGeometry;
   private readonly markerMat: THREE.MeshStandardMaterial;
@@ -69,6 +69,11 @@ export class SurfaceScene implements AppScene {
   private simAccum = 0;
   private timeScale = 1;
   private paused = false;
+
+  // v2 Phase F: region-scale "broader powers", unlocked by cultivation progress.
+  private regionMode = false;
+  private actionsPerformed = 0;
+  private caughtUp = '';
 
   // v2 Phase D: lightly-gathered resources spent on embodied transformation.
   private seeds = 3;
@@ -178,10 +183,13 @@ export class SurfaceScene implements AppScene {
     void loadDiff(this.diffKey).then((d) => {
       if (d) {
         this.diff = d;
-        this.elapsed = d.lastVisited;
+        this.rebuildMarkers();
+        this.applyDiffToEco();
+        // Coarse catch-up: advance the sim by the in-world time since last visit,
+        // in a few large steps, so the world has plausibly "moved on".
+        const away = worldClock.seconds - d.lastVisited;
+        if (away > 2) this.catchUp(away);
       }
-      this.rebuildMarkers();
-      this.applyDiffToEco();
     });
 
     // Ecosystem field sim over a fixed region centered on the spawn point.
@@ -235,19 +243,34 @@ export class SurfaceScene implements AppScene {
     } else if (e.key === 'x' || e.key === 'X') {
       this.gather();
     } else if (e.key === 'f' || e.key === 'F') {
-      this.act('plant');
+      this.act('plant', this.actRadius());
     } else if (e.key === 'c' || e.key === 'C') {
-      this.act('clear');
+      this.act('clear', this.actRadius());
     } else if (e.key === 'v' || e.key === 'V') {
-      this.act('water');
+      this.act('water', this.actRadius());
     } else if (e.key === 'h' || e.key === 'H') {
-      this.act('herb');
+      this.act('herb', this.actRadius());
     } else if (e.key === 'y' || e.key === 'Y') {
-      this.act('pred');
+      this.act('pred', this.actRadius());
     } else if (e.key === 'e' || e.key === 'E') {
       this.eat();
+    } else if (e.key === 'b' || e.key === 'B') {
+      if (this.regionUnlocked()) {
+        this.regionMode = !this.regionMode;
+        this.lastAction = `region (broad) tools ${this.regionMode ? 'ON' : 'off'}`;
+      } else {
+        this.lastAction = `region tools locked — transform ${5 - this.actionsPerformed} more time(s) to unlock`;
+      }
     }
   };
+
+  private regionUnlocked(): boolean {
+    return this.actionsPerformed >= 5;
+  }
+
+  private actRadius(): number {
+    return this.regionMode && this.regionUnlocked() ? 6 : 1;
+  }
 
   /** Eat: hunt a local herd, or forage local vegetation — consumes the field. */
   private eat(): void {
@@ -317,65 +340,85 @@ export class SurfaceScene implements AppScene {
     }
   }
 
-  private forEachNeighbor(i: number, j: number, fn: (k: number) => void): void {
-    for (let dj = -1; dj <= 1; dj++) {
-      for (let di = -1; di <= 1; di++) {
-        if (this.eco.inGrid(i + di, j + dj)) fn((j + dj) * this.eco.width + (i + di));
+  /** Visit every in-grid cell within `radius` of (i,j), passing its grid index
+   *  and absolute sim-cell coords. radius 1 = a small patch; large = a region. */
+  private forEachInRadius(
+    i: number,
+    j: number,
+    radius: number,
+    fn: (k: number, gx: number, gz: number) => void,
+  ): void {
+    const r2 = radius * radius;
+    for (let dj = -radius; dj <= radius; dj++) {
+      for (let di = -radius; di <= radius; di++) {
+        if (di * di + dj * dj > r2) continue;
+        const ii = i + di;
+        const jj = j + dj;
+        if (!this.eco.inGrid(ii, jj)) continue;
+        fn(jj * this.eco.width + ii, this.eco.originGX + ii, this.eco.originGZ + jj);
       }
     }
   }
 
-  private act(kind: 'plant' | 'clear' | 'water' | 'herb' | 'pred'): void {
+  /** Embodied transformation. radius>1 are the region-scale "broader powers" —
+   *  the same verbs, batched, writing a larger diff. */
+  private act(kind: 'plant' | 'clear' | 'water' | 'herb' | 'pred', radius: number): void {
     const c = this.playerGridCell();
     if (!c) {
       this.lastAction = 'out of the simulated region';
       return;
     }
-    switch (kind) {
-      case 'plant':
-        if (this.seeds <= 0) {
-          this.lastAction = 'no seeds — press X on vegetation to gather';
-          return;
+    const region = radius > 1;
+    const scope = region ? 'across the region' : 'here';
+    const eco = this.eco;
+
+    if (kind === 'plant') {
+      const cost = region ? 3 : 1;
+      if (this.seeds < cost) {
+        this.lastAction = `need ${cost} seed(s) — press X on vegetation to gather`;
+        return;
+      }
+      this.seeds -= cost;
+      this.forEachInRadius(c.i, c.j, radius, (k, gx, gz) => {
+        if (!eco.isWater[k]) eco.vegetation[k] = Math.max(eco.vegetation[k]!, 0.75);
+        this.editCell(gx, gz, { planted: true, cleared: false });
+      });
+      this.lastAction = `afforested ${scope} — it will grow and spread`;
+    } else if (kind === 'clear') {
+      this.forEachInRadius(c.i, c.j, radius, (k, gx, gz) => {
+        eco.vegetation[k] = 0;
+        this.editCell(gx, gz, { cleared: true, planted: false });
+      });
+      this.lastAction = `cleared vegetation ${scope}`;
+    } else if (kind === 'water') {
+      this.forEachInRadius(c.i, c.j, radius, (k, gx, gz) => {
+        const ii = k % eco.width;
+        const jj = Math.floor(k / eco.width);
+        eco.applyEdit(ii, jj, { water: true });
+        this.editCell(gx, gz, { water: true });
+      });
+      this.lastAction = `flooded ${scope} — moisture will spread`;
+    } else if (kind === 'herb' || kind === 'pred') {
+      const cost = region ? 3 : 1;
+      if (this.samples < cost) {
+        this.lastAction = `need ${cost} sample(s) — press X near a herd to gather`;
+        return;
+      }
+      this.samples -= cost;
+      const amt = region ? 1.5 : kind === 'herb' ? 4 : 2;
+      this.forEachInRadius(c.i, c.j, radius, (k, gx, gz) => {
+        if (kind === 'herb') {
+          eco.herbivore[k] = Math.min(8, eco.herbivore[k]! + amt);
+          this.editCell(gx, gz, { herb: amt });
+        } else {
+          eco.predator[k] = Math.min(4, eco.predator[k]! + amt);
+          this.editCell(gx, gz, { pred: amt });
         }
-        this.seeds--;
-        this.forEachNeighbor(c.i, c.j, (k) => {
-          if (!this.eco.isWater[k]) this.eco.vegetation[k] = Math.max(this.eco.vegetation[k]!, 0.75);
-        });
-        this.editCell(c.gx, c.gz, { planted: true, cleared: false });
-        this.lastAction = 'planted a seed — it will grow and spread';
-        break;
-      case 'clear':
-        this.forEachNeighbor(c.i, c.j, (k) => (this.eco.vegetation[k] = 0));
-        this.editCell(c.gx, c.gz, { cleared: true, planted: false });
-        this.lastAction = 'cleared the vegetation here';
-        break;
-      case 'water':
-        this.eco.applyEdit(c.i, c.j, { water: true });
-        this.forEachNeighbor(c.i, c.j, (k) => (this.eco.moisture[k] = Math.max(this.eco.moisture[k]!, 0.85)));
-        this.editCell(c.gx, c.gz, { water: true });
-        this.lastAction = 'dug a water source — moisture will spread';
-        break;
-      case 'herb':
-        if (this.samples <= 0) {
-          this.lastAction = 'no samples — press X near a herd to gather';
-          return;
-        }
-        this.samples--;
-        this.eco.herbivore[c.k] = Math.min(8, this.eco.herbivore[c.k]! + 4);
-        this.editCell(c.gx, c.gz, { herb: 4 });
-        this.lastAction = 'introduced herbivores';
-        break;
-      case 'pred':
-        if (this.samples <= 0) {
-          this.lastAction = 'no samples — press X near a herd to gather';
-          return;
-        }
-        this.samples--;
-        this.eco.predator[c.k] = Math.min(4, this.eco.predator[c.k]! + 2);
-        this.editCell(c.gx, c.gz, { pred: 2 });
-        this.lastAction = 'introduced predators';
-        break;
+      });
+      this.lastAction = `introduced ${kind === 'herb' ? 'herbivores' : 'predators'} ${scope}`;
     }
+
+    this.actionsPerformed++;
     this.persist();
   }
 
@@ -412,12 +455,18 @@ export class SurfaceScene implements AppScene {
   }
 
   private persist(): void {
-    this.diff.lastVisited = this.elapsed;
+    this.diff.lastVisited = worldClock.seconds;
     void saveDiff(this.diffKey, this.diff);
   }
 
+  /** Advance the ecosystem by elapsed away-time in a few coarse steps. */
+  private catchUp(seconds: number): void {
+    const steps = Math.min(800, Math.round(seconds / 0.5));
+    for (let i = 0; i < steps; i++) this.eco.step(0.5);
+    this.caughtUp = `the world moved on (~${Math.round(seconds)}s while away)`;
+  }
+
   update(dt: number): void {
-    this.elapsed += dt;
     this.controller.update(dt);
 
     // Floating-origin recenter on XZ (whole chunks).
@@ -520,6 +569,8 @@ export class SurfaceScene implements AppScene {
       `[K] pause [L] speed [J] skip · overlay: ${this.overlay.visible ? this.overlay.field : 'off'} ([O] toggle [I] field)`,
       `seeds ${this.seeds} · samples ${this.samples} — [X] gather [F] plant [C] clear [V] water [H] herbivores [Y] predators`,
       `energy ${bar(n.energy)} warmth ${bar(n.warmth)} food ${bar(n.food)} vitality ${bar(n.vitality)} — [E] eat${haz ? `  ⚠ ${haz}` : ''}`,
+      `[B] region tools: ${this.regionUnlocked() ? (this.regionMode ? 'ON (broad)' : 'off') : 'locked'}`,
+      ...(this.caughtUp ? [`⟳ ${this.caughtUp}`] : []),
       ...(this.lastAction ? [`» ${this.lastAction}`] : []),
     ];
     if (!this.controller.isLocked) {
