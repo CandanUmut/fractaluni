@@ -87,16 +87,19 @@ export class ShipTerminal {
     }
 
     this.el.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;gap:10px">
         <div style="font-size:16px;font-weight:700">⛭ SHIP TERMINAL</div>
-        <div>currency: <b style="color:#ffd27a">${progression.currency}¢</b></div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span>currency: <b style="color:#ffd27a">${progression.currency}¢</b></span>
+          <button data-close="1" aria-label="Close" style="font:inherit;cursor:pointer;color:#cfe3ff;background:rgba(120,140,170,0.22);border:1px solid rgba(120,160,220,0.4);border-radius:6px;padding:4px 12px;line-height:1">✕</button>
+        </div>
       </div>
       <button data-sell="1" style="${this.btnStyle(true)};width:100%;margin-bottom:6px">
         Sell all cargo (<span id="sellv">…</span>¢)
       </button>
       ${contractHtml}
       <div style="border-top:1px solid rgba(120,160,220,0.2);padding-top:8px">${rows}</div>
-      <div style="opacity:0.6;margin-top:12px;text-align:center">press B to close</div>
+      <button data-close="1" style="${this.btnStyle(true)};width:100%;margin-top:12px">Close (B)</button>
     `;
 
     // Wire buttons.
@@ -121,6 +124,9 @@ export class ShipTerminal {
         this.onChange();
         this.render();
       }
+    });
+    this.el.querySelectorAll('button[data-close]').forEach((b) => {
+      b.addEventListener('click', () => this.close());
     });
   }
 

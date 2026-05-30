@@ -840,6 +840,9 @@ export class SurfaceScene implements AppScene {
     });
     this.shud.setVisible(!this.terminal.visible);
     touchUI.current?.block('terminal', this.terminal.visible);
+    // Keep movement frozen exactly while the terminal is open (covers closing
+    // it via the in-menu button, which bypasses the B-key handler).
+    this.controller.enabled = !this.terminal.visible;
 
     // HUD reticle: damage vignette from recent hits + low energy; hide crosshair in menu.
     const dmg = Math.max(this.hitFlash / 0.4, this.energy <= 1 ? 0.4 : 0);
