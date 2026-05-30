@@ -33,16 +33,21 @@ export class SkyDome {
         uniform vec3 uZenith;
         uniform vec3 uSun;
         uniform vec3 uSunDir;
+        uniform float uSunSize;
         void main() {
           vec3 dir = normalize(vDir);
           float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
           vec3 col = mix(uHorizon, uZenith, pow(h, 0.7));
           // Atmospheric haze brightening toward the horizon line.
           col = mix(col, uHorizon * 1.15, smoothstep(0.5, 0.0, h) * 0.5);
-          // Sun: tight bright disc + broad halo + low-horizon scatter tint.
+          // Sun: tight bright disc + broad halo + low-horizon scatter tint. The
+          // disc/halo exponents shrink as uSunSize grows, so a close star reads
+          // as a big disc and a distant one as a small bright point.
           float d = max(dot(dir, normalize(uSunDir)), 0.0);
-          col += uSun * pow(d, 350.0) * 4.0;
-          col += uSun * pow(d, 6.0) * 0.4;
+          float disc = 350.0 / uSunSize;
+          float halo = 6.0 / sqrt(uSunSize);
+          col += uSun * pow(d, disc) * 4.0;
+          col += uSun * pow(d, halo) * 0.4;
           col += uSun * pow(d, 2.0) * 0.08 * smoothstep(0.6, 0.0, abs(dir.y));
           gl_FragColor = vec4(col, 1.0);
         }
@@ -54,6 +59,11 @@ export class SkyDome {
 
   setSunDir(dir: THREE.Vector3): void {
     this.mat.uniforms.uSunDir!.value.copy(dir).normalize();
+  }
+
+  /** Apparent sun size (1 = Earth-like; >1 closer/bigger, <1 farther/smaller). */
+  setSunSize(size: number): void {
+    this.mat.uniforms.uSunSize!.value = size;
   }
 
   /** Recolor the dome (day/night cycle). */

@@ -243,6 +243,9 @@ export class SurfaceScene implements AppScene {
     this.timeOfDay = 0.05 + rng() * 0.5; // start somewhere in daylight
 
     this.sky = new SkyDome(pal.skyHorizon, pal.skyZenith, pal.sun, sunDir);
+    // Apparent sun size ~ star radius / orbital distance (angular size). A planet
+    // hugging its star sees a huge sun; a distant one sees a small bright point.
+    this.sky.setSunSize(clamp(this.star.radius / this.planet.orbitalRadius, 0.3, 4.5));
     this.scene.add(this.sky.mesh);
 
     // Night sky (real galaxy starfield from this planet), derived moons + soft
@@ -361,6 +364,8 @@ export class SurfaceScene implements AppScene {
     this.guardians = new GuardianManager(this.planet.seed, this.sampler, this.diff, this.nodes.resourcePalette, pal);
     this.scene.add(this.guardians.group);
     this.guardians.onAttack = (dmg, at) => this.takeDamage(dmg, at);
+    // Aggressive wildlife (on some planets) bites into the same damage path.
+    this.herds.onAttack = (dmg, at) => this.takeDamage(dmg, at);
     this.guardians.onKill = (type, amount, x, z) => {
       this.collect(type, amount, false);
       this.markers.showBanner(`GUARDIAN DOWN  ·  +${amount} ${type.name}`);

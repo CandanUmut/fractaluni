@@ -236,7 +236,18 @@ interface Critter {
   dying: number; // >0 while collapsing after the killing blow
   dead: boolean;
   flee: number; // >0 while bolting away from a recent shot
+  attackCd: number; // hostile species: time until the next strike lands
 }
+
+// Hostile-species tuning: territorial predators that turn on the player. Reused
+// for the "some planets have aggressive wildlife" feature — not a cheap wall, but
+// real pressure that leans on the existing health/downed recovery.
+const HOSTILE_AGGRO = 42; // notices the player within this range
+const HOSTILE_ATTACK_RANGE = 4.0;
+const HOSTILE_DMG = 10;
+const HOSTILE_ATTACK_CD = 1.6;
+const HOSTILE_CHASE = 8;
+const HOSTILE_HP = 46;
 
 // Ambient creature counts per species, by biome. Some of these become hostile
 // guardians in the scavenger layer; the rest are scenery/life.
@@ -255,10 +266,16 @@ const SPECIES_DENSITY: Partial<Record<string, number>> = {
  *  scenery and, in the scavenger layer, as the basis for deposit guardians.) */
 export class AnimalHerds {
   readonly group = new THREE.Group();
+  /** Drain the player when an aggressive creature lands a hit (atLocal = strike pos). */
+  onAttack: (dmg: number, atLocal: THREE.Vector3) => void = () => {};
+
   private readonly meshes: THREE.InstancedMesh[] = [];
   private readonly critters: Critter[][] = [];
+  private readonly hostileFlags: boolean[] = []; // per species
   private readonly archetypeList: Archetype[] = [];
   private readonly material: THREE.MeshStandardMaterial;
+  private readonly hostileMaterial: THREE.MeshStandardMaterial;
+  private readonly atVec = new THREE.Vector3();
   private readonly sampler: TerrainSampler;
   /** Local→world height (applies the floating origin), injected by the scene. */
   private readonly heightAt: (x: number, z: number) => number;
@@ -281,6 +298,16 @@ export class AnimalHerds {
       roughness: 0.85,
       metalness: 0.0,
     });
+    // Aggressive species share a separate material with a faint angry glow so
+    // they read as a threat at a glance.
+    this.hostileMaterial = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      flatShading: true,
+      roughness: 0.7,
+      metalness: 0.0,
+      emissive: new THREE.Color(0x551005),
+      emissiveIntensity: 0.6,
+    });
     if (planet.biome === 'molten' || planet.biome === 'barren-rock') return;
     const perSpecies = SPECIES_DENSITY[planet.biome] ?? 0;
     if (perSpecies === 0) return;
@@ -298,31 +325,57 @@ export class AnimalHerds {
       this.archetypeList.push(arch);
       const rng = makeRNG(deriveSeed(planetSeed, 0xfa00, s));
       const geo = creatureGeometry(speciesParams(arch, pal, rng));
-      const mesh = new THREE.InstancedMesh(geo, this.material, perSpecies);
-      mesh.count = perSpecies;
-      mesh.castShadow = true;
-      mesh.frustumCulled = false;
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      this.meshes.push(mesh);
-      this.group.add(mesh);
-
-      const list: Critter[] = [];
-      for (let i = 0; i < perSpecies; i++) {
-        list.push({
-          x: (rng() - 0.5) * this.range,
-          z: (rng() - 0.5) * this.range,
-          heading: rng() * TAU,
-          turn: 0,
-          speed: rangeFloat(rng, 2.5, 6),
-          phase: rng() * TAU,
-          hp: 24,
-          dying: 0,
-          dead: false,
-          flee: 0,
-        });
-      }
-      this.critters.push(list);
+      this.addSpecies(geo, this.material, perSpecies, rng, false, 24);
     }
+
+    // Some worlds (not all) host an aggressive species that turns on the player —
+    // a different, spiked, reddish predator picked per planet, so attackers vary
+    // between worlds (raptor packs / a lumbering brute / a beetle swarm).
+    const hrng = makeRNG(deriveSeed(planetSeed, 0xb175));
+    if (hrng() < 0.45) {
+      const harch = GUARDIAN_ARCHETYPES[Math.floor(hrng() * GUARDIAN_ARCHETYPES.length)]!;
+      this.archetypeList.push(harch);
+      const geo = creatureGeometry(guardianParams(harch, pal, hrng));
+      const count = Math.max(3, Math.round(perSpecies * 0.4));
+      this.addSpecies(geo, this.hostileMaterial, count, hrng, true, HOSTILE_HP);
+    }
+  }
+
+  /** Register one species: its instanced mesh + a fresh critter list. */
+  private addSpecies(
+    geo: THREE.BufferGeometry,
+    mat: THREE.MeshStandardMaterial,
+    count: number,
+    rng: RNG,
+    hostile: boolean,
+    hp: number,
+  ): void {
+    const mesh = new THREE.InstancedMesh(geo, mat, count);
+    mesh.count = count;
+    mesh.castShadow = true;
+    mesh.frustumCulled = false;
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.meshes.push(mesh);
+    this.hostileFlags.push(hostile);
+    this.group.add(mesh);
+
+    const list: Critter[] = [];
+    for (let i = 0; i < count; i++) {
+      list.push({
+        x: (rng() - 0.5) * this.range,
+        z: (rng() - 0.5) * this.range,
+        heading: rng() * TAU,
+        turn: 0,
+        speed: hostile ? rangeFloat(rng, 4, 7) : rangeFloat(rng, 2.5, 6),
+        phase: rng() * TAU,
+        hp,
+        dying: 0,
+        dead: false,
+        flee: 0,
+        attackCd: rng() * HOSTILE_ATTACK_CD,
+      });
+    }
+    this.critters.push(list);
   }
 
   /** The per-species instanced meshes (raycast targets for shooting). */
@@ -344,7 +397,7 @@ export class AnimalHerds {
     if (!c || c.dead || c.dying > 0) return null;
     const gy = this.heightAt(c.x, c.z);
     c.hp -= damage;
-    c.flee = 5; // bolt away whether it lived or died
+    if (!this.hostileFlags[s]) c.flee = 5; // prey bolts; predators press the attack
     if (c.hp <= 0) {
       c.dying = 1.2;
       return { pos: new THREE.Vector3(c.x, gy + 0.6, c.z), killed: true };
@@ -371,6 +424,7 @@ export class AnimalHerds {
     for (let s = 0; s < this.meshes.length; s++) {
       const list = this.critters[s]!;
       const mesh = this.meshes[s]!;
+      const hostile = this.hostileFlags[s]!;
       for (let i = 0; i < list.length; i++) {
         const c = list[i]!;
 
@@ -393,6 +447,41 @@ export class AnimalHerds {
           this.dummy.updateMatrix();
           mesh.setMatrixAt(i, this.dummy.matrix);
           continue;
+        }
+
+        // Aggressive species: when the player comes near, chase and strike.
+        if (hostile) {
+          c.attackCd -= dt;
+          const dxp = playerLocal.x - c.x;
+          const dzp = playerLocal.z - c.z;
+          const pdist = Math.hypot(dxp, dzp);
+          if (pdist < HOSTILE_AGGRO) {
+            c.heading = Math.atan2(dxp, dzp);
+            if (pdist <= HOSTILE_ATTACK_RANGE) {
+              if (c.attackCd <= 0) {
+                c.attackCd = HOSTILE_ATTACK_CD;
+                const gyh = this.heightAt(c.x, c.z);
+                this.onAttack(HOSTILE_DMG, this.atVec.set(c.x, gyh + 1, c.z));
+              }
+            } else {
+              const sp = HOSTILE_CHASE * dt;
+              const nx = c.x + Math.sin(c.heading) * sp;
+              const nz = c.z + Math.cos(c.heading) * sp;
+              if (this.heightAt(nx, nz) >= seaGuard) {
+                c.x = nx;
+                c.z = nz;
+              }
+            }
+            const strike = Math.max(0, 1 - c.attackCd / 0.3); // brief lunge after a hit
+            const gy = this.heightAt(c.x, c.z);
+            const bob = Math.sin(this.time * (3 + c.speed) + c.phase) * 0.06;
+            this.dummy.position.set(c.x, gy + bob + strike * 0.4, c.z);
+            this.dummy.rotation.set(strike * -0.35, c.heading, 0); // rear up to lunge
+            this.dummy.scale.setScalar(1 + strike * 0.15);
+            this.dummy.updateMatrix();
+            mesh.setMatrixAt(i, this.dummy.matrix);
+            continue;
+          }
         }
 
         c.turn += (Math.random() - 0.5) * dt * 2.5; // visual jitter only
@@ -432,5 +521,6 @@ export class AnimalHerds {
   dispose(): void {
     for (const m of this.meshes) m.geometry.dispose();
     this.material.dispose();
+    this.hostileMaterial.dispose();
   }
 }
