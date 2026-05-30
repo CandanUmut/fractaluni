@@ -257,6 +257,7 @@ export class AnimalHerds {
   readonly group = new THREE.Group();
   private readonly meshes: THREE.InstancedMesh[] = [];
   private readonly critters: Critter[][] = [];
+  private readonly archetypeList: Archetype[] = [];
   private readonly material: THREE.MeshStandardMaterial;
   private readonly sampler: TerrainSampler;
   /** Local→world height (applies the floating origin), injected by the scene. */
@@ -293,8 +294,10 @@ export class AnimalHerds {
       [pool[i], pool[j]] = [pool[j]!, pool[i]!];
     }
     for (let s = 0; s < nSpecies; s++) {
+      const arch = pool[s % pool.length]!;
+      this.archetypeList.push(arch);
       const rng = makeRNG(deriveSeed(planetSeed, 0xfa00, s));
-      const geo = creatureGeometry(speciesParams(pool[s % pool.length]!, pal, rng));
+      const geo = creatureGeometry(speciesParams(arch, pal, rng));
       const mesh = new THREE.InstancedMesh(geo, this.material, perSpecies);
       mesh.count = perSpecies;
       mesh.castShadow = true;
@@ -325,6 +328,11 @@ export class AnimalHerds {
   /** The per-species instanced meshes (raycast targets for shooting). */
   meshList(): THREE.InstancedMesh[] {
     return this.meshes;
+  }
+
+  /** Archetypes present on this planet (for the discovery codex). */
+  archetypes(): Archetype[] {
+    return this.archetypeList;
   }
 
   /** Damage the creature at (mesh, instanceId). Returns its local position for
