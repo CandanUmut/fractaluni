@@ -355,6 +355,12 @@ export class AnimalHerds {
     mesh.castShadow = true;
     mesh.frustumCulled = false;
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    // Instances roam every frame and the floating origin shifts, so the
+    // once-computed bounding sphere goes stale and the raycaster's early-out
+    // would wrongly cull the whole mesh — making shots pass through creatures.
+    // A generous static sphere disables that faulty early-out; per-instance
+    // raycasting still gives accurate hits.
+    mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1e5);
     this.meshes.push(mesh);
     this.hostileFlags.push(hostile);
     this.group.add(mesh);
@@ -456,7 +462,11 @@ export class AnimalHerds {
           const dzp = playerLocal.z - c.z;
           const pdist = Math.hypot(dxp, dzp);
           if (pdist < HOSTILE_AGGRO) {
-            c.heading = Math.atan2(dxp, dzp);
+            // Smoothly turn toward the player (snapping a big model looks like it
+            // spins/flies); the shortest-arc lerp keeps it grounded and natural.
+            const target = Math.atan2(dxp, dzp);
+            let delta = ((target - c.heading + Math.PI) % TAU + TAU) % TAU - Math.PI;
+            c.heading += delta * Math.min(1, dt * 6);
             if (pdist <= HOSTILE_ATTACK_RANGE) {
               if (c.attackCd <= 0) {
                 c.attackCd = HOSTILE_ATTACK_CD;
@@ -464,6 +474,7 @@ export class AnimalHerds {
                 this.onAttack(HOSTILE_DMG, this.atVec.set(c.x, gyh + 1, c.z));
               }
             } else {
+              // Approach along the current heading, staying on walkable ground.
               const sp = HOSTILE_CHASE * dt;
               const nx = c.x + Math.sin(c.heading) * sp;
               const nz = c.z + Math.cos(c.heading) * sp;
@@ -474,10 +485,11 @@ export class AnimalHerds {
             }
             const strike = Math.max(0, 1 - c.attackCd / 0.3); // brief lunge after a hit
             const gy = this.heightAt(c.x, c.z);
-            const bob = Math.sin(this.time * (3 + c.speed) + c.phase) * 0.06;
-            this.dummy.position.set(c.x, gy + bob + strike * 0.4, c.z);
-            this.dummy.rotation.set(strike * -0.35, c.heading, 0); // rear up to lunge
-            this.dummy.scale.setScalar(1 + strike * 0.15);
+            const bob = Math.sin(this.time * (3 + c.speed) + c.phase) * 0.05;
+            // Feet stay planted; only a small forward rear-up sells the lunge.
+            this.dummy.position.set(c.x, gy + bob, c.z);
+            this.dummy.rotation.set(strike * -0.25, c.heading, 0);
+            this.dummy.scale.setScalar(1 + strike * 0.12);
             this.dummy.updateMatrix();
             mesh.setMatrixAt(i, this.dummy.matrix);
             continue;
