@@ -1,8 +1,12 @@
-import { progression, UPGRADES, priceOf, isMaxed, buy, ensureContract } from '../sim/progression.ts';
+import {
+  progression, UPGRADES, priceOf, isMaxed, buy, ensureMissions, acceptMission,
+  repTier, playerLevel, type Mission,
+} from '../sim/progression.ts';
 import { RESOURCES } from '../universe/resources.ts';
 
-// The ship's trade + upgrade terminal (DOM overlay). Sell cargo for currency and
-// buy higher-tier gear, which gates access to richer/more-dangerous resources.
+// The ship's trade + upgrade + mission terminal (DOM overlay). Sell cargo, take
+// jobs from the rotating mission board, hand in deliveries/harvests, and buy
+// higher-tier gear that gates richer/more-dangerous resources.
 
 export class ShipTerminal {
   private readonly el: HTMLDivElement;
@@ -12,10 +16,10 @@ export class ShipTerminal {
   onSell: () => number = () => 0;
   /** Called after any change so the scene can re-apply derived stats. */
   onChange: () => void = () => {};
-  /** Try to fulfil the active contract from cargo; returns true on success. */
-  onDeliver: () => boolean = () => false;
-  /** How much of the contract resource the player is carrying. */
-  haveOfContract: () => number = () => 0;
+  /** How much of a resource the player is carrying (scene-owned inventory). */
+  inventoryOf: (id: string) => number = () => 0;
+  /** Hand in a delivery/harvest mission from cargo; returns true on success. */
+  onTurnIn: (m: Mission) => boolean = () => false;
 
   constructor(root: HTMLElement) {
     this.el = document.createElement('div');
@@ -24,10 +28,12 @@ export class ShipTerminal {
     s.top = '50%';
     s.left = '50%';
     s.transform = 'translate(-50%, -50%)';
-    s.width = '460px';
-    s.maxWidth = '92vw';
+    s.width = '480px';
+    s.maxWidth = '94vw';
+    s.maxHeight = '88vh';
+    s.overflow = 'auto';
     s.padding = '18px 20px';
-    s.background = 'rgba(10,16,28,0.94)';
+    s.background = 'rgba(10,16,28,0.95)';
     s.border = '1px solid rgba(120,160,220,0.4)';
     s.borderRadius = '10px';
     s.pointerEvents = 'auto';
@@ -46,6 +52,7 @@ export class ShipTerminal {
     this.visible = true;
     this.el.style.display = 'block';
     if (document.pointerLockElement) document.exitPointerLock();
+    ensureMissions();
     this.render();
   }
 
@@ -54,10 +61,38 @@ export class ShipTerminal {
     this.el.style.display = 'none';
   }
 
+  private missionRow(m: Mission): string {
+    const reward = `<b style="color:#ffd27a">${m.reward}¢</b> · +${m.rep} rep`;
+    if (m.kind === 'bounty') {
+      const body = m.accepted
+        ? `<span style="opacity:0.7">progress ${m.progress}/${m.required} · completes in the field</span>`
+        : `<span style="opacity:0.8">hunt ${m.required} guardians — ${reward}</span>`;
+      return this.missionShell('🎯 Bounty', body, m, false, false);
+    }
+    const name = RESOURCES[m.resource ?? '']?.name ?? m.resource;
+    const have = Math.floor(this.inventoryOf(m.resource ?? ''));
+    const canTurnIn = m.accepted && have >= m.required;
+    const verb = m.kind === 'harvest' ? '🌿 Harvest' : '📦 Delivery';
+    const body = `<span style="opacity:0.8">${m.kind === 'harvest' ? 'bring' : 'deliver'} ${m.required} ${name} — ${reward}</span>` +
+      (m.accepted ? `<br><span style="opacity:0.6">carrying ${have}/${m.required}</span>` : '');
+    return this.missionShell(verb, body, m, true, canTurnIn);
+  }
+
+  private missionShell(title: string, body: string, m: Mission, turnInKind: boolean, canTurnIn: boolean): string {
+    let action: string;
+    if (!m.accepted) {
+      action = `<button data-accept="${m.id}" style="${this.btnStyle(true)}">Accept</button>`;
+    } else if (turnInKind) {
+      action = `<button data-turnin="${m.id}" style="${this.btnStyle(canTurnIn)}">Turn in</button>`;
+    } else {
+      action = `<span style="opacity:0.6">accepted</span>`;
+    }
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin:6px 0;padding:8px 10px;border:1px solid rgba(120,160,220,0.2);border-radius:8px;${m.accepted ? 'background:rgba(40,70,110,0.25)' : ''}">
+      <div><b>${title}</b><br>${body}</div><div>${action}</div></div>`;
+  }
+
   private render(): void {
-    const cargoValue = this.onSell === undefined ? 0 : 0;
-    void cargoValue;
-    const rows = UPGRADES.map((def) => {
+    const upgrades = UPGRADES.map((def) => {
       const maxed = isMaxed(def);
       const price = priceOf(def);
       const afford = progression.currency >= price;
@@ -69,40 +104,27 @@ export class ShipTerminal {
         <div>${btn}</div></div>`;
     }).join('');
 
-    const c = ensureContract();
-    let contractHtml: string;
-    if (c.kind === 'bounty') {
-      contractHtml = `<div style="margin:10px 0;padding:10px;border:1px solid rgba(120,160,220,0.25);border-radius:8px">
-        <b>📋 Bounty</b><br><span style="opacity:0.8">hunt ${c.required} guardians — reward <b style="color:#ffd27a">${c.reward}¢</b></span><br>
-        <span style="opacity:0.6">progress ${c.progress}/${c.required} · completes in the field</span></div>`;
-    } else {
-      const have = this.haveOfContract();
-      const canDeliver = have >= c.required;
-      contractHtml = `<div style="margin:10px 0;padding:10px;border:1px solid rgba(120,160,220,0.25);border-radius:8px">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-          <div><b>📋 Delivery</b><br><span style="opacity:0.8">deliver ${c.required} ${RESOURCES[c.resource ?? '']?.name ?? c.resource} — reward <b style="color:#ffd27a">${c.reward}¢</b></span><br>
-          <span style="opacity:0.6">carrying ${Math.floor(have)}/${c.required}</span></div>
-          <button data-deliver="1" style="${this.btnStyle(canDeliver)}">Deliver</button>
-        </div></div>`;
-    }
+    const missions = progression.missions.map((m) => this.missionRow(m)).join('');
 
     this.el.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;gap:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px">
         <div style="font-size:16px;font-weight:700">⛭ SHIP TERMINAL</div>
         <div style="display:flex;align-items:center;gap:12px">
+          <span style="opacity:0.85">Lv ${playerLevel()} · rep ${progression.reputation} (T${repTier()})</span>
           <span>currency: <b style="color:#ffd27a">${progression.currency}¢</b></span>
           <button data-close="1" aria-label="Close" style="font:inherit;cursor:pointer;color:#cfe3ff;background:rgba(120,140,170,0.22);border:1px solid rgba(120,160,220,0.4);border-radius:6px;padding:4px 12px;line-height:1">✕</button>
         </div>
       </div>
-      <button data-sell="1" style="${this.btnStyle(true)};width:100%;margin-bottom:6px">
+      <button data-sell="1" style="${this.btnStyle(true)};width:100%;margin-bottom:8px">
         Sell all cargo (<span id="sellv">…</span>¢)
       </button>
-      ${contractHtml}
-      <div style="border-top:1px solid rgba(120,160,220,0.2);padding-top:8px">${rows}</div>
+      <div style="font-weight:700;color:#9ec5ff;margin:10px 0 2px">📋 Mission Board</div>
+      ${missions}
+      <div style="font-weight:700;color:#9ec5ff;margin:12px 0 2px;border-top:1px solid rgba(120,160,220,0.2);padding-top:8px">🔧 Upgrades</div>
+      ${upgrades}
       <button data-close="1" style="${this.btnStyle(true)};width:100%;margin-top:12px">Close (B)</button>
     `;
 
-    // Wire buttons.
     this.el.querySelectorAll('button[data-up]').forEach((b) => {
       b.addEventListener('click', () => {
         const def = UPGRADES.find((u) => u.id === (b as HTMLElement).dataset.up);
@@ -112,18 +134,25 @@ export class ShipTerminal {
         }
       });
     });
-    const sellBtn = this.el.querySelector('button[data-sell]');
-    sellBtn?.addEventListener('click', () => {
+    this.el.querySelector('button[data-sell]')?.addEventListener('click', () => {
       this.onSell();
       this.onChange();
       this.render();
     });
-    const delBtn = this.el.querySelector('button[data-deliver]');
-    delBtn?.addEventListener('click', () => {
-      if (this.onDeliver()) {
-        this.onChange();
+    this.el.querySelectorAll('button[data-accept]').forEach((b) => {
+      b.addEventListener('click', () => {
+        acceptMission((b as HTMLElement).dataset.accept!);
         this.render();
-      }
+      });
+    });
+    this.el.querySelectorAll('button[data-turnin]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const m = progression.missions.find((x) => x.id === (b as HTMLElement).dataset.turnin);
+        if (m && this.onTurnIn(m)) {
+          this.onChange();
+          this.render();
+        }
+      });
     });
     this.el.querySelectorAll('button[data-close]').forEach((b) => {
       b.addEventListener('click', () => this.close());

@@ -30,7 +30,8 @@ const PC_CONTROLS: [string, string][] = [
   ['Fire / Mine', 'Left Mouse'],
   ['Weapons', '1 gun · 2 frag · 3 drill'],
   ['Scan deposits', 'R'],
-  ['Trade at ship', 'B'],
+  ['Trade & missions', 'B (at ship)'],
+  ['Discovery codex', 'C'],
   ['Walk / Fly', 'G'],
   ['Take off', 'T'],
   ['Menu', 'Esc'],
@@ -43,7 +44,8 @@ const MOBILE_CONTROLS: [string, string][] = [
   ['Jump / Jetpack', 'JUMP button'],
   ['Weapons', 'WPN button cycles'],
   ['Scan deposits', 'SCAN button'],
-  ['Trade at ship', 'SHIP button'],
+  ['Trade & missions', 'SHIP button'],
+  ['Discovery codex', 'CODEX button'],
   ['Take off', 'LIFT button'],
   ['Menu', '☰ (top-left)'],
 ];
@@ -142,7 +144,7 @@ export class StartScreen {
       <div style="font-size:22px;font-weight:800;color:#9ec5ff">Welcome, explorer</div>
       <div style="text-align:left;margin-top:14px;opacity:0.9">
         <p style="margin:0 0 10px">Fractaluni is an <b>infinite, procedurally-generated universe</b> grown from a single seed. Soar through a galaxy of stars, drop into a star system, then land on a planet's surface.</p>
-        <p style="margin:0 0 10px"><b>Your goal:</b> survive and get rich. <b>Scan</b> for ore deposits, <b>mine</b> them with your drill, <b>haul</b> the cargo back to your ship, and <b>sell</b> it to buy upgrades. Beware the guardians defending the richest veins.</p>
+        <p style="margin:0 0 10px"><b>Your goal:</b> survive and get rich. <b>Scan</b> for ore deposits, <b>mine</b> them with your drill, <b>haul</b> the cargo back to your ship, and <b>sell</b> it to buy upgrades. Take <b>missions</b> from the ship's board, earn <b>reputation &amp; XP</b>, and fill your <b>discovery codex</b>. Beware the guardians defending the richest veins — they can take you down.</p>
         <p style="margin:0 0 10px"><b>It's a living world.</b> Birds wheel overhead, herds roam the plains, fish dart through the water, and forests cover the hills — and you can <b>shoot all of it</b>. Take aim with the pulse rifle or frag charges and watch the world react.</p>
       </div>
       <div style="margin-top:16px;font-weight:700;text-align:left;color:#9affd0">Controls</div>

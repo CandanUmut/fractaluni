@@ -25,7 +25,13 @@ import { Reticle } from '../ui/reticle.ts';
 import { Markers, type MarkerSpec } from '../ui/markers.ts';
 import { SurfaceHud } from '../ui/surfaceHud.ts';
 import { Objectives } from '../ui/objectives.ts';
-import { progression, energyMaxFor, cargoCapFor, scanRangeFor, gunDamageFor, drillTierFor, saveProgression, ensureContract, newContract } from '../sim/progression.ts';
+import {
+  progression, energyMaxFor, cargoCapFor, scanRangeFor, gunDamageFor, drillTierFor,
+  healthMaxFor, shieldMaxFor, saveProgression, ensureMissions, acceptedMissions,
+  completeMission, discover, grantXp, playerLevel, type Mission,
+} from '../sim/progression.ts';
+import { Notifications } from '../ui/notifications.ts';
+import { CodexPanel } from '../ui/codexPanel.ts';
 import { settings } from '../ui/settings.ts';
 import { makeWeapons, type HeldItem, type WeaponCtx, type RayHit } from '../weapons/items.ts';
 import { audio } from '../audio/audio.ts';
@@ -110,6 +116,17 @@ export class SurfaceScene implements AppScene {
   private readonly solarRegen: number; // from the star's luminosity
   private regenDelay = 0; // pause regen briefly after spending
   private hitFlash = 0;
+
+  // Depth pass: real stakes (health + shield + downed/respawn), meta HUD, codex.
+  private health = 100;
+  private healthMax = 100;
+  private shield = 40;
+  private shieldMax = 40;
+  private shieldRegenDelay = 0;
+  private downed = 0; // >0 while respawning back at the ship
+  private invuln = 0; // brief grace after respawn
+  private readonly notify: Notifications;
+  private readonly codex: CodexPanel;
 
   // Floating origin on XZ (Y stays near the ground).
   private originCX = 0;
@@ -276,38 +293,36 @@ export class SurfaceScene implements AppScene {
     this.markers = new Markers(hudRoot);
     this.shud = new SurfaceHud(hudRoot);
     this.objectives = new Objectives(hudRoot);
+    this.notify = new Notifications(hudRoot);
+    this.codex = new CodexPanel(hudRoot);
     this.terminal.onSell = () => this.sellCargo();
     this.terminal.onChange = () => this.applyProgression();
-    this.terminal.onDeliver = () => this.deliverContract();
-    this.terminal.haveOfContract = () => this.inventory.get(progression.contract?.resource ?? '') ?? 0;
-    ensureContract();
+    this.terminal.inventoryOf = (id) => this.inventory.get(id) ?? 0;
+    this.terminal.onTurnIn = (m) => this.turnInMission(m);
+    ensureMissions();
     this.energyMax = energyMaxFor();
     this.energy = this.energyMax;
+    this.healthMax = healthMaxFor();
+    this.health = this.healthMax;
+    this.shieldMax = shieldMaxFor();
+    this.shield = this.shieldMax;
+
+    // Discovery: catalogue this world on arrival (XP + toasts for firsts).
+    progression.codex.planetsVisited += 1;
+    this.discoverNotify('biomes', this.planet.biome, `biome: ${this.planet.biome}`);
+    this.discoverNotify('starClasses', this.star.spectralClass.charAt(0), `star class ${this.star.spectralClass.charAt(0)}`);
+    for (const a of this.herds.archetypes()) this.discoverNotify('creatures', a, `creature: ${a}`);
+
     // Guardians defend valuable deposits.
     this.guardians = new GuardianManager(this.planet.seed, this.sampler, this.diff, this.nodes.resourcePalette, pal);
     this.scene.add(this.guardians.group);
-    this.guardians.onAttack = (dmg, at) => {
-      this.energy = Math.max(0, this.energy - dmg);
-      this.hitFlash = 0.4;
-      this.lastMsg = `⚠ hit! energy −${dmg}`;
-      audio.play('hurt', 0.8);
-      audio.play('attack', 0.7, this.panFor(at));
-    };
+    this.guardians.onAttack = (dmg, at) => this.takeDamage(dmg, at);
     this.guardians.onKill = (type, amount, x, z) => {
       this.collect(type, amount, false);
       this.markers.showBanner(`GUARDIAN DOWN  ·  +${amount} ${type.name}`);
       audio.play('death', 0.8, this.panFor(this.feet.set(x, 0, z)));
-      // Bounty mission progress (auto-completes in the field).
-      const c = progression.contract;
-      if (c && c.kind === 'bounty') {
-        c.progress += 1;
-        if (c.progress >= c.required) {
-          progression.currency += c.reward;
-          this.markers.showBanner(`BOUNTY COMPLETE  ·  +${c.reward}¢`);
-          progression.contract = newContract();
-        }
-        saveProgression();
-      }
+      if (grantXp(30)) this.notify.push('LEVEL UP', 'reward');
+      this.onGuardianKill();
     };
 
     void loadDiff(this.diffKey).then((d) => {
@@ -365,6 +380,7 @@ export class SurfaceScene implements AppScene {
       if (at) {
         this.effects.burst(at, new THREE.Color(0xffe0a0), 14, 6, 0.5, -10, 6);
         audio.play('impact', 0.7, this.panFor(at));
+        this.harvest(RESOURCES.biomass!, 3, 6);
       }
       return true;
     }
@@ -374,6 +390,7 @@ export class SurfaceScene implements AppScene {
       if (at) {
         this.effects.burst(at, new THREE.Color(0xbfe6ff), 12, 5, 0.4, -2, 5);
         audio.play('impact', 0.6, this.panFor(at));
+        this.harvest(RESOURCES.biomass!, 4, 6);
       }
       return true;
     }
@@ -384,6 +401,7 @@ export class SurfaceScene implements AppScene {
       audio.play(creature.killed ? 'death' : 'hurt', 0.7, this.panFor(creature.pos));
       const p = this.worldToScreen(creature.pos.clone().setY(creature.pos.y + 1.5));
       if (p.visible) this.markers.damageNumber(p.sx, p.sy, creature.killed ? '✕' : `${Math.round(power)}`, '#ff9a6a');
+      if (creature.killed) this.harvest(RESOURCES.biomass!, 12, 12);
       return true;
     }
     // Trees / flora — fell them in a topple of leaves.
@@ -391,9 +409,16 @@ export class SurfaceScene implements AppScene {
     if (felled) {
       this.effects.burst(felled, new THREE.Color(0x9bd17a), 18, 6, 0.7, -5, 6);
       audio.play('impact', 0.5, this.panFor(felled));
+      this.harvest(RESOURCES.wood!, 6, 6);
       return true;
     }
     return false;
+  }
+
+  /** Grant loot from a felled/harvested thing: collect the resource + a little XP. */
+  private harvest(type: ResourceType, amount: number, xp: number): void {
+    this.collect(type, amount, false);
+    if (grantXp(xp)) this.notify.push('LEVEL UP', 'reward');
   }
 
   private readonly onHit = (hit: RayHit, kind: 'gun' | 'bomb' | 'drill', dt: number): void => {
@@ -469,6 +494,7 @@ export class SurfaceScene implements AppScene {
     this.inventory.set(type.id, (this.inventory.get(type.id) ?? 0) + got);
     this.cargoUsed += got;
     this.objectives.complete('mine');
+    this.discoverNotify('resources', type.id, `resource: ${type.name}`);
     if (this.pickupT <= 0) {
       this.pickupT = 0.25;
       audio.play(depleted ? 'extract' : 'pickup', 0.6);
@@ -550,6 +576,8 @@ export class SurfaceScene implements AppScene {
       this.doScan();
     } else if (e.key === 'b' || e.key === 'B') {
       this.toggleShipTerminal();
+    } else if (e.key === 'c' || e.key === 'C') {
+      this.codex.toggle();
     }
   };
 
@@ -563,7 +591,6 @@ export class SurfaceScene implements AppScene {
   private toggleShipTerminal(): void {
     if (this.terminal.visible || this.nearShip) {
       this.terminal.toggle();
-      this.controller.enabled = !this.terminal.visible; // freeze movement in the menu
     } else {
       this.lastMsg = 'return to your ship to trade & upgrade';
     }
@@ -589,6 +616,7 @@ export class SurfaceScene implements AppScene {
       { id: 'scan', label: 'SCAN', onDown: () => this.doScan() },
       { id: 'fly', label: 'FLY', onDown: () => this.controller.toggleMode() },
       { id: 'ship', label: 'SHIP', onDown: () => this.toggleShipTerminal() },
+      { id: 'codex', label: 'CODEX', onDown: () => this.codex.toggle() },
       { id: 'lift', label: 'LIFT', onDown: () => this.onTakeOff?.() },
     ];
   }
@@ -616,26 +644,47 @@ export class SurfaceScene implements AppScene {
     return v;
   }
 
-  private contractText(): string {
-    const c = progression.contract;
-    if (!c) return '';
-    if (c.kind === 'bounty') return `hunt ${c.progress}/${c.required} guardians → ${c.reward}¢`;
-    const have = Math.floor(this.inventory.get(c.resource!) ?? 0);
-    return `deliver ${have}/${c.required} ${RESOURCES[c.resource!]?.name ?? c.resource} → ${c.reward}¢`;
+  /** Short label + progress for an accepted mission (objective tracker). */
+  private missionLabel(m: Mission): string {
+    if (m.kind === 'bounty') return `Hunt guardians ${m.progress}/${m.required} → ${m.reward}¢`;
+    const name = RESOURCES[m.resource ?? '']?.name ?? m.resource;
+    const have = Math.floor(this.inventory.get(m.resource ?? '') ?? 0);
+    const verb = m.kind === 'harvest' ? 'Harvest' : 'Deliver';
+    return `${verb} ${name} ${Math.min(have, m.required)}/${m.required} → ${m.reward}¢`;
   }
 
-  private deliverContract(): boolean {
-    const c = progression.contract;
-    if (!c || c.kind !== 'delivery' || !c.resource) return false;
-    const have = this.inventory.get(c.resource) ?? 0;
-    if (have < c.required) return false;
-    this.inventory.set(c.resource, have - c.required);
-    this.cargoUsed = Math.max(0, this.cargoUsed - c.required);
-    progression.currency += c.reward;
-    this.markers.showBanner(`CONTRACT COMPLETE  ·  +${c.reward}¢`);
-    progression.contract = newContract();
-    saveProgression();
+  /** Hand in a delivery/harvest mission from cargo (called by the terminal). */
+  private turnInMission(m: Mission): boolean {
+    if (m.kind === 'bounty' || !m.resource) return false;
+    const have = this.inventory.get(m.resource) ?? 0;
+    if (have < m.required) return false;
+    this.inventory.set(m.resource, have - m.required);
+    this.cargoUsed = Math.max(0, this.cargoUsed - m.required);
+    completeMission(m);
+    this.applyProgression();
+    this.notify.push(`Mission complete · +${m.reward}¢ · +${m.rep} rep`, 'reward');
+    this.markers.showBanner(`MISSION COMPLETE  ·  +${m.reward}¢`);
     return true;
+  }
+
+  /** Credit accepted bounty missions when a guardian falls. */
+  private onGuardianKill(): void {
+    for (const m of acceptedMissions()) {
+      if (m.kind !== 'bounty') continue;
+      m.progress += 1;
+      if (m.progress >= m.required) {
+        completeMission(m);
+        this.applyProgression();
+        this.notify.push(`Bounty complete · +${m.reward}¢ · +${m.rep} rep`, 'reward');
+        this.markers.showBanner(`BOUNTY COMPLETE  ·  +${m.reward}¢`);
+      }
+    }
+    saveProgression();
+  }
+
+  /** Record a discovery and toast it the first time it's seen. */
+  private discoverNotify(category: 'biomes' | 'creatures' | 'resources' | 'starClasses', key: string, label: string): void {
+    if (discover(category, key)) this.notify.push(`Discovered ${label} · +25 XP`, 'good');
   }
 
   /** Re-apply derived stats after an upgrade purchase. */
@@ -644,6 +693,61 @@ export class SurfaceScene implements AppScene {
     this.cargoCap = cargoCapFor();
     this.scanRange = scanRangeFor();
     this.drillTier = drillTierFor();
+    const hm = healthMaxFor();
+    if (hm > this.healthMax) this.health += hm - this.healthMax; // upgrade tops up
+    this.healthMax = hm;
+    const sm = shieldMaxFor();
+    if (sm > this.shieldMax) this.shield += sm - this.shieldMax;
+    this.shieldMax = sm;
+  }
+
+  /** Apply incoming damage to shield then health; trigger downed at zero. */
+  private takeDamage(dmg: number, at: THREE.Vector3): void {
+    if (this.invuln > 0 || this.downed > 0) return;
+    this.hitFlash = 0.5;
+    this.shieldRegenDelay = 3;
+    audio.play('hurt', 0.8);
+    audio.play('attack', 0.7, this.panFor(at));
+    const absorbed = Math.min(this.shield, dmg);
+    this.shield -= absorbed;
+    const rest = dmg - absorbed;
+    if (rest > 0) {
+      this.health -= rest;
+      if (this.health <= 0) {
+        this.health = 0;
+        this.beginDowned();
+      }
+    }
+    this.lastMsg = this.shield > 0 ? `⚠ hit! shield −${Math.round(absorbed)}` : `⚠ hit! health −${Math.round(rest)}`;
+  }
+
+  private beginDowned(): void {
+    this.downed = 1.8;
+    this.controller.enabled = false;
+    this.notify.push('You were downed — recovering at your ship…', 'warn');
+    this.markers.showBanner('⚠ DOWNED');
+    audio.play('death', 0.7);
+  }
+
+  /** Teleport back to the ship, restore vitals, drop a quarter of the cargo. */
+  private respawn(): void {
+    let lost = 0;
+    for (const [id, amt] of this.inventory) {
+      const keep = amt * 0.75;
+      lost += amt - keep;
+      this.inventory.set(id, keep);
+    }
+    this.cargoUsed = Math.max(0, this.cargoUsed - lost);
+    const shipLX = -this.originCX * CHUNK_SIZE;
+    const shipLZ = -this.originCZ * CHUNK_SIZE;
+    this.camera.position.set(shipLX, this.sampler.heightAt(0, 0) + this.controller.eyeHeight, shipLZ);
+    this.controller.placeOnGround();
+    this.health = this.healthMax;
+    this.shield = this.shieldMax;
+    this.energy = this.energyMax;
+    this.invuln = 2.5;
+    this.controller.enabled = !this.terminal.visible && !this.codex.visible;
+    if (lost > 0) this.notify.push(`Recovered at ship · lost ${Math.round(lost)} cargo`, 'warn');
   }
 
   /** Advance the day/night cycle: arc the sun, recolor sky/light/fog, gate solar. */
@@ -747,6 +851,18 @@ export class SurfaceScene implements AppScene {
     this.energy = clamp(this.energy, 0, this.energyMax);
     if (this.hitFlash > 0) this.hitFlash -= dt;
 
+    // Health/shield: shield recharges after a few seconds out of combat; health
+    // trickles back slowly (approachable). Downed → recover back at the ship.
+    if (this.invuln > 0) this.invuln -= dt;
+    this.shieldRegenDelay -= dt;
+    if (this.downed <= 0) {
+      if (this.shieldRegenDelay <= 0) this.shield = Math.min(this.shieldMax, this.shield + 14 * dt);
+      this.health = Math.min(this.healthMax, this.health + 1.5 * dt);
+    } else {
+      this.downed -= dt;
+      if (this.downed <= 0) this.respawn();
+    }
+
     // Ship hub: it sits at the descent point (abs 0,0). Near it you recharge fast
     // and can open the trade/upgrade terminal — so cargo has to be hauled back.
     const shipLX = -this.originCX * CHUNK_SIZE;
@@ -757,6 +873,8 @@ export class SurfaceScene implements AppScene {
     this.nearShip = Math.hypot(this.camera.position.x - shipLX, this.camera.position.z - shipLZ) < 16;
     if (this.nearShip) {
       this.energy = Math.min(this.energyMax, this.energy + 70 * dt);
+      this.health = Math.min(this.healthMax, this.health + 45 * dt);
+      this.shield = Math.min(this.shieldMax, this.shield + 45 * dt);
       this.regenDelay = 0;
     }
     if (this.terminal.visible) this.terminal.setSellValue(this.cargoValue());
@@ -820,34 +938,47 @@ export class SurfaceScene implements AppScene {
     this.objectives.update(dt);
 
     // Styled HUD.
-    const hint = !this.controller.isLocked && !touch.enabled
-      ? 'click to capture mouse'
-      : this.nearShip
-        ? '◈ at ship — recharging · press B to trade & upgrade'
-        : this.lastMsg;
+    const menuOpen = this.terminal.visible || this.codex.visible;
+    const hint = this.downed > 0
+      ? 'downed — recovering at your ship…'
+      : !this.controller.isLocked && !touch.enabled
+        ? 'click to capture mouse'
+        : this.nearShip
+          ? '◈ at ship — recharging · trade & upgrade'
+          : this.lastMsg;
     this.shud.set({
       energy: this.energy,
       energyMax: this.energyMax,
+      health: this.health,
+      healthMax: this.healthMax,
+      shield: this.shield,
+      shieldMax: this.shieldMax,
       cargo: this.cargoUsed,
       cargoCap: this.cargoCap,
       currency: progression.currency,
+      level: playerLevel(),
+      reputation: progression.reputation,
       weapon: this.current.name,
       drillTier: this.drillTier,
       scanRange: this.scanRange,
       nearShip: this.nearShip,
       hint,
-      contract: this.contractText(),
     });
-    this.shud.setVisible(!this.terminal.visible);
+    this.shud.setVisible(!menuOpen);
+    // Objective tracker: accepted missions with live progress.
+    this.notify.setObjectives(acceptedMissions().map((m) => ({ text: this.missionLabel(m) })));
+    this.notify.setVisible(!menuOpen);
+    this.notify.update(dt);
     touchUI.current?.block('terminal', this.terminal.visible);
-    // Keep movement frozen exactly while the terminal is open (covers closing
-    // it via the in-menu button, which bypasses the B-key handler).
-    this.controller.enabled = !this.terminal.visible;
+    touchUI.current?.block('codex', this.codex.visible);
+    // Keep movement frozen while a menu is open or while downed (covers closing
+    // via the in-menu button, which bypasses the key handler).
+    this.controller.enabled = !menuOpen && this.downed <= 0;
 
-    // HUD reticle: damage vignette from recent hits + low energy; hide crosshair in menu.
-    const dmg = Math.max(this.hitFlash / 0.4, this.energy <= 1 ? 0.4 : 0);
+    // HUD reticle: damage vignette from recent hits + low health; hide crosshair in menu.
+    const dmg = Math.max(this.hitFlash / 0.5, this.health < this.healthMax * 0.3 ? 0.45 : 0);
     this.reticle.update(dt, dmg);
-    this.reticle.setVisible(!this.terminal.visible);
+    this.reticle.setVisible(!menuOpen);
 
     // Weapons (aim from the clean camera orientation before shake).
     this.current.update(sdt, this.buildCtx());
@@ -918,6 +1049,8 @@ export class SurfaceScene implements AppScene {
     this.markers.dispose();
     this.shud.dispose();
     this.objectives.dispose();
+    this.notify.dispose();
+    this.codex.dispose();
     this.controller.dispose();
     this.chunks.dispose();
     this.flora.dispose();
