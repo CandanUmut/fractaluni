@@ -19,6 +19,9 @@ export class SkyDome {
         uZenith: { value: new THREE.Color(rgbToHex(zenith)) },
         uSun: { value: new THREE.Color(rgbToHex(sun)) },
         uSunDir: { value: sunDir.clone().normalize() },
+        // Apparent sun size (1 = Earth-like). Bigger when the planet hugs its
+        // star, smaller out in the cold — set by the scene from orbital distance.
+        uSunSize: { value: 1.0 },
       },
       vertexShader: /* glsl */ `
         varying vec3 vDir;
