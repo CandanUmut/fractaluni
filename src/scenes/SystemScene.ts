@@ -4,6 +4,10 @@ import type { BloomSettings } from '../render/composer.ts';
 import { FlyController } from './controls/FlyController.ts';
 import { Spaceship } from '../render/spaceship.ts';
 import { Missiles } from '../render/missiles.ts';
+import { Meteors } from '../render/meteors.ts';
+import { Hostiles } from '../render/hostiles.ts';
+import { Effects } from '../render/effects.ts';
+import { progression, saveProgression } from '../sim/progression.ts';
 import { deriveStarAt, deriveSystem } from '../universe/index.ts';
 import { planetResources, planetDanger } from '../universe/resources.ts';
 import { planetHazards } from '../sim/hazards.ts';
@@ -44,7 +48,17 @@ export class SystemScene implements AppScene {
   private readonly controller: FlyController;
   private readonly highlight: THREE.Mesh;
   private readonly ship = new Spaceship();
-  private readonly missiles = new Missiles(this.scene);
+  private missiles!: Missiles;
+  private enemyShots!: Missiles;
+  private readonly effects = new Effects();
+  private meteors!: Meteors;
+  private hostiles!: Hostiles;
+  private playRadius = 200;
+  private hull = 100;
+  private readonly hullMax = 100;
+  private combatMsg = '';
+  private combatMsgT = 0;
+  private readonly shake = new THREE.Vector2();
   private readonly camOffset = new THREE.Vector3();
   private readonly muzzle = new THREE.Vector3();
   private readonly fwd = new THREE.Vector3();
@@ -122,6 +136,18 @@ export class SystemScene implements AppScene {
     this.controller.baseSpeed = clamp(outer * 0.25, 30, 400);
     this.missileSpeed = this.controller.baseSpeed * 1.8 + 120;
 
+    // Combat: drifting meteors + enemy raiders to shoot for salvage, an effects
+    // pool for explosions, and a red enemy-projectile pool that fires back.
+    this.playRadius = clamp(outer * 1.15, 140, 900);
+    this.scene.add(this.effects.group);
+    this.missiles = new Missiles(this.scene);
+    this.enemyShots = new Missiles(this.scene, { bodyColor: 0xff5a4a, flameColor: 0xff6a4a, blastColor: 0xff6a4a, silent: true, cooldown: 0.1 });
+    this.meteors = new Meteors(this.star.seed, 9, this.playRadius);
+    this.scene.add(this.meteors.group);
+    this.hostiles = new Hostiles(this.star.seed, 3, this.playRadius);
+    this.scene.add(this.hostiles.group);
+    this.hostiles.onFire = (o, d) => this.enemyShots.fire(o, d, this.missileSpeed * 0.5);
+
     window.addEventListener('keydown', this.onKeyDown);
     dom.addEventListener('pointerdown', this.onPointerDown);
   }
@@ -138,6 +164,35 @@ export class SystemScene implements AppScene {
       this.ship.muzzleWorld(side, this.muzzle);
       this.missiles.fire(this.muzzle, this.fwd, this.missileSpeed);
     }
+  }
+
+  /** Credit salvage from a destroyed meteor/raider and flash a status line. */
+  private awardSalvage(amount: number, msg: string): void {
+    progression.currency += amount;
+    saveProgression();
+    this.combatMsg = `${msg} · +${amount}¢`;
+    this.combatMsgT = 3;
+  }
+
+  /** Enemy fire chips the ship's hull; depletion falls back to the system edge. */
+  private takeHit(dmg: number): void {
+    this.hull -= dmg;
+    this.effects.addShake(0.05);
+    this.combatMsg = `⚠ hull hit · ${Math.max(0, Math.round(this.hull))}/${this.hullMax}`;
+    this.combatMsgT = 2;
+    if (this.hull <= 0) this.respawnShip();
+  }
+
+  private respawnShip(): void {
+    this.hull = this.hullMax;
+    const penalty = Math.min(progression.currency, 30);
+    progression.currency -= penalty;
+    saveProgression();
+    const r = this.playRadius * 1.2;
+    this.ship.group.position.set(0, r * 0.3, r);
+    this.ship.group.lookAt(0, 0, 0);
+    this.combatMsg = `hull breached — fell back to system edge · −${penalty}¢`;
+    this.combatMsgT = 4;
   }
 
   private addPlanet(p: PlanetProfile): void {
@@ -303,16 +358,47 @@ export class SystemScene implements AppScene {
       b.mesh.rotation.y += dt * 0.2;
     }
 
-    // Missiles burst on contact with a planet (or the central star).
+    // Effects + combat actors.
+    this.effects.update(dt);
+    this.meteors.update(dt);
+    this.hostiles.update(dt, ship.position);
+
+    // Player missiles: meteors (salvage), raiders (bounty), then planets/star.
     this.missiles.update(dt, (pos) => {
+      const rock = this.meteors.intersect(pos);
+      if (rock) {
+        const r = this.meteors.destroy(rock, this.effects);
+        this.awardSalvage(r.currency, 'meteor cracked');
+        return r.pos;
+      }
+      const foe = this.hostiles.intersect(pos);
+      if (foe) {
+        const r = this.hostiles.damage(foe, 20, this.effects);
+        if (r.killed) this.awardSalvage(r.currency, 'raider destroyed');
+        return r.pos;
+      }
       if (pos.length() < this.starWorldR + 2) return new THREE.Vector3(0, 0, 0);
       for (const b of this.bodies) {
         if (pos.distanceToSquared(b.mesh.position) < (b.worldRadius + 1.5) * (b.worldRadius + 1.5)) {
+          this.effects.burst(b.mesh.position.clone(), new THREE.Color(0xffd089), 10, 8, 0.5, 0, 7);
           return b.mesh.position.clone();
         }
       }
       return null;
     });
+
+    // Enemy fire: a near miss on the ship chips the hull (downs → edge respawn).
+    this.enemyShots.update(dt, (pos) => {
+      if (pos.distanceTo(ship.position) < 4) {
+        this.takeHit(8);
+        return pos.clone();
+      }
+      return null;
+    });
+
+    // Hull self-repairs slowly out of fire.
+    this.hull = Math.min(this.hullMax, this.hull + 2.5 * dt);
+    if (this.combatMsgT > 0) this.combatMsgT -= dt;
 
     // Nearest planet to the ship within its selection distance.
     this.candidate = null;
@@ -333,6 +419,13 @@ export class SystemScene implements AppScene {
     } else {
       this.highlight.visible = false;
     }
+
+    // Combat camera shake (applied after the chase-cam set; reset next frame).
+    const sh = this.effects.getShake(this.shake);
+    if (sh.x !== 0 || sh.y !== 0) {
+      this.camera.rotateX(sh.x);
+      this.camera.rotateY(sh.y);
+    }
   }
 
   resize(width: number, height: number): void {
@@ -346,6 +439,10 @@ export class SystemScene implements AppScene {
     audio.stopEngine();
     this.controller.dispose();
     this.missiles.dispose();
+    this.enemyShots.dispose();
+    this.meteors.dispose();
+    this.hostiles.dispose();
+    this.effects.dispose();
     this.ship.dispose();
     this.chartEl?.remove();
     for (const d of this.disposables) d.dispose();
@@ -360,6 +457,8 @@ export class SystemScene implements AppScene {
     if (!this.controller.isLocked) lines.push('click to capture mouse · WASD+RF fly · Q/E roll · Shift warp');
     lines.push('[Backspace] back to galaxy');
     lines.push('[M] system chart (orbital survey)');
+    lines.push(`hull ${Math.max(0, Math.round(this.hull))}/${this.hullMax} · LMB fire — destroy meteors & raiders for credits`);
+    if (this.combatMsgT > 0) lines.push(`▸ ${this.combatMsg}`);
     if (this.candidate) {
       const p = this.candidate.profile;
       lines.push(

@@ -19,6 +19,13 @@ export interface StarSelection {
   record: StarRecord;
 }
 
+/** Where to drop the ship into the galaxy — the star you last left from, so you
+ *  exit the map where you entered it instead of snapping back to the origin. */
+export interface GalaxyEntry {
+  cell: [number, number, number];
+  offset: [number, number, number];
+}
+
 const SELECT_RADIUS = 300;
 
 /** Infinite chunked starfield flown in a third-person ship, with floating-origin
@@ -49,7 +56,7 @@ export class GalaxyScene implements AppScene {
   private readonly muzzle = new THREE.Vector3();
   private readonly fwd = new THREE.Vector3();
 
-  constructor(universeSeed: number, dom: HTMLElement) {
+  constructor(universeSeed: number, dom: HTMLElement, entry?: GalaxyEntry) {
     this.dom = dom;
     this.scene.background = new THREE.Color(0x02030a);
 
@@ -59,12 +66,25 @@ export class GalaxyScene implements AppScene {
     this.nebula = makeNebula(universeSeed);
     this.scene.add(this.nebula);
 
+    // Re-entering from a system: rebase the floating origin onto that star's cell
+    // so its offset becomes the local spawn point — we come out where we went in.
+    if (entry) {
+      this.origin.originCell.set(entry.cell[0], entry.cell[1], entry.cell[2]);
+    }
+
     this.starfield = new Starfield(universeSeed, 3);
     this.scene.add(this.starfield.points);
     this.starfield.update(this.origin, true);
 
     // The ship is the player object the controller drives; the camera trails it.
     this.scene.add(this.ship.group);
+    if (entry) {
+      // Drop in just outside the star we left, looking back toward it.
+      const [sx, sy, sz] = entry.offset;
+      this.ship.group.position.set(sx, sy + 30, sz + 240);
+      this.ship.group.lookAt(sx, sy, sz);
+      this.camera.position.set(sx, sy + 60, sz + 480);
+    }
     this.controller = new FlyController(this.ship.group, dom);
 
     // Soft lighting so the ship (a lit material) reads against dark space.

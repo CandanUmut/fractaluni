@@ -1,5 +1,5 @@
 import { SceneManager } from './scenes/SceneManager.ts';
-import { GalaxyScene } from './scenes/GalaxyScene.ts';
+import { GalaxyScene, type GalaxyEntry } from './scenes/GalaxyScene.ts';
 import { SystemScene } from './scenes/SystemScene.ts';
 import { SurfaceScene } from './scenes/SurfaceScene.ts';
 import type { AppScene } from './scenes/AppScene.ts';
@@ -60,6 +60,10 @@ writeState(state);
 // are still placeholders until Phases 3–4.
 const universeSeed = hashString(state.seed);
 
+// Remember which star we last flew into, so returning to the galaxy map drops us
+// back beside it instead of snapping to the origin.
+let galaxyEntry: GalaxyEntry | undefined;
+
 function sceneForLocation(loc: Location): AppScene {
   switch (loc.kind) {
     case 'system': {
@@ -82,8 +86,11 @@ function sceneForLocation(loc: Location): AppScene {
     }
     case 'galaxy':
     default: {
-      const galaxy = new GalaxyScene(universeSeed, manager.domElement);
-      galaxy.onSelectStar = (sel) => goTo({ kind: 'system', cell: sel.cell, star: sel.index });
+      const galaxy = new GalaxyScene(universeSeed, manager.domElement, galaxyEntry);
+      galaxy.onSelectStar = (sel) => {
+        galaxyEntry = { cell: sel.cell, offset: sel.record.offset };
+        goTo({ kind: 'system', cell: sel.cell, star: sel.index });
+      };
       return galaxy;
     }
   }

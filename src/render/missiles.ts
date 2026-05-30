@@ -3,12 +3,26 @@ import { audio } from '../audio/audio.ts';
 
 // Ship-launched missiles for the flight scenes: a small glowing projectile with
 // a fading additive trail that streaks forward and detonates on a lifetime
-// timeout or when a proximity test reports a hit (a star/planet). Self-contained
-// (its own trails + blasts), operating in the scene's local space so the caller
-// only has to feed it the floating-origin shift.
+// timeout or when a proximity test reports a hit (a star/planet/meteor/raider).
+// Self-contained (its own trails + blasts), operating in the scene's local space
+// so the caller only has to feed it the floating-origin shift.
+//
+// Options let a second instance read as enemy fire (red, silent) without
+// duplicating the class.
 
 const TRAIL_LEN = 16;
 const FORWARD = new THREE.Vector3(0, 0, 1);
+
+export interface MissileOptions {
+  bodyColor?: number;
+  flameColor?: number;
+  trailColor?: number;
+  blastColor?: number;
+  /** Skip the throw/explosion sound (e.g. enemy fire, to avoid audio spam). */
+  silent?: boolean;
+  /** Seconds between shots from this launcher. */
+  cooldown?: number;
+}
 
 interface Missile {
   group: THREE.Group;
@@ -33,11 +47,14 @@ export class Missiles {
   private readonly missiles: Missile[] = [];
   private readonly blasts: Blast[] = [];
   private cooldown = 0;
+  private readonly fireCooldown: number;
+  private readonly silent: boolean;
+  private readonly blastColor: number;
 
   // Shared materials.
-  private readonly bodyMat = new THREE.MeshStandardMaterial({ color: 0xd8dde6, flatShading: true, roughness: 0.4, metalness: 0.6 });
-  private readonly flameMat = new THREE.MeshBasicMaterial({ color: 0xffb24a, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
-  private readonly trailMat = new THREE.LineBasicMaterial({ color: 0xff8a3a, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false });
+  private readonly bodyMat: THREE.MeshStandardMaterial;
+  private readonly flameMat: THREE.MeshBasicMaterial;
+  private readonly trailMat: THREE.LineBasicMaterial;
   private readonly bodyGeo = (() => {
     const g = new THREE.ConeGeometry(0.22, 1.1, 10);
     g.rotateX(Math.PI / 2); // point +Z
@@ -49,9 +66,15 @@ export class Missiles {
   private readonly tmp = new THREE.Vector3();
   private readonly q = new THREE.Quaternion();
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, opts: MissileOptions = {}) {
     this.scene = scene;
     scene.add(this.group);
+    this.silent = opts.silent ?? false;
+    this.fireCooldown = opts.cooldown ?? 0.32;
+    this.blastColor = opts.blastColor ?? 0xffb060;
+    this.bodyMat = new THREE.MeshStandardMaterial({ color: opts.bodyColor ?? 0xd8dde6, flatShading: true, roughness: 0.4, metalness: 0.6 });
+    this.flameMat = new THREE.MeshBasicMaterial({ color: opts.flameColor ?? 0xffb24a, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+    this.trailMat = new THREE.LineBasicMaterial({ color: opts.trailColor ?? opts.flameColor ?? 0xff8a3a, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false });
   }
 
   get ready(): boolean {
@@ -61,7 +84,7 @@ export class Missiles {
   /** Launch a missile from `origin` along `dir` (normalized) at `speed` u/s. */
   fire(origin: THREE.Vector3, dir: THREE.Vector3, speed: number): void {
     if (this.cooldown > 0) return;
-    this.cooldown = 0.32;
+    this.cooldown = this.fireCooldown;
 
     const group = new THREE.Group();
     group.add(new THREE.Mesh(this.bodyGeo, this.bodyMat));
@@ -80,7 +103,7 @@ export class Missiles {
     this.group.add(trail);
 
     this.missiles.push({ group, vel: dir.clone().normalize().multiplyScalar(speed), life: 3.2, trail, pts });
-    audio.play('throw', 0.7);
+    if (!this.silent) audio.play('throw', 0.7);
   }
 
   /** `proximity` returns a detonation point if the missile struck something. */
@@ -128,14 +151,14 @@ export class Missiles {
   }
 
   private detonate(at: THREE.Vector3): void {
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffb060, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
+    const mat = new THREE.MeshBasicMaterial({ color: this.blastColor, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
     const mesh = new THREE.Mesh(this.flameGeo, mat);
     mesh.position.copy(at);
     const light = new THREE.PointLight(0xff9a4a, 8, 220, 1.4);
     light.position.copy(at);
     this.group.add(mesh, light);
     this.blasts.push({ mesh, mat, light, t: 0, dur: 0.6, radius: 14 });
-    audio.play('explosion', 0.7);
+    if (!this.silent) audio.play('explosion', 0.7);
   }
 
   private removeMissile(i: number): void {
