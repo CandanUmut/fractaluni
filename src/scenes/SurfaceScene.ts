@@ -16,11 +16,17 @@ import { BirdFlock, birdColor } from '../agents/boids.ts';
 import { AnimalHerds } from '../agents/animals.ts';
 import { FishSchool, fishColor } from '../agents/fish.ts';
 import { SkyDome } from '../render/sky.ts';
+import { NightSky } from '../render/nightSky.ts';
+import { Moons } from '../render/moons.ts';
+import { Weather } from '../render/weather.ts';
 import { Water } from '../render/water.ts';
 import { Viewmodel } from '../render/viewmodel.ts';
 import { Spaceship } from '../render/spaceship.ts';
 import { Effects } from '../render/effects.ts';
 import { ShipTerminal } from '../ui/shipTerminal.ts';
+import { CraftBench } from '../ui/craftBench.ts';
+import { RECIPES, canCraft, doCraft, coldProtectionFor, airProtectionFor } from '../sim/crafting.ts';
+import { planetHazards, type PlanetHazards } from '../sim/hazards.ts';
 import { Reticle } from '../ui/reticle.ts';
 import { Markers, type MarkerSpec } from '../ui/markers.ts';
 import { SurfaceHud } from '../ui/surfaceHud.ts';
@@ -63,6 +69,9 @@ export class SurfaceScene implements AppScene {
   private readonly fish: FishSchool | null;
   private readonly herds: AnimalHerds;
   private readonly sky: SkyDome;
+  private readonly nightSky: NightSky;
+  private readonly moons: Moons;
+  private readonly weather: Weather;
   private readonly water: Water | null;
   private readonly controller: SurfaceController;
   private readonly viewmodel = new Viewmodel();
@@ -95,6 +104,7 @@ export class SurfaceScene implements AppScene {
   // v3 Phase F: landed ship hub (trade + upgrade + recharge).
   private readonly ship = new Spaceship();
   private readonly terminal: ShipTerminal;
+  private readonly bench: CraftBench;
   private readonly reticle: Reticle;
   private readonly markers: Markers;
   private readonly shud: SurfaceHud;
@@ -152,6 +162,21 @@ export class SurfaceScene implements AppScene {
   private readonly cTmpB = new THREE.Color();
   private readonly cTmpC = new THREE.Color();
 
+  // Phase 2 hazards (warmth / air) — derived per planet; non-lethal, route into
+  // the health/downed system. Phase 3 crafted protection fills the *Protection.
+  private hazards!: PlanetHazards;
+  private warmth = 100;
+  private air = 100;
+  private readonly warmthMax = 100;
+  private readonly airMax = 100;
+  private coldProtection = 0;
+  private airProtection = 0;
+  private hazardDmgT = 0;
+  // Moonlight + dawn/dusk + weather-driven fog.
+  private moonLight!: THREE.DirectionalLight;
+  private fogBase = 0.002;
+  private readonly duskColor = new THREE.Color(0xff7a38);
+
   constructor(
     universeSeed: number,
     cell: readonly [number, number, number],
@@ -164,6 +189,9 @@ export class SurfaceScene implements AppScene {
     this.planet = derivePlanet(this.star, planetIndex);
     // Solar recharge scales with the star's luminosity — a derivation-pipeline payoff.
     this.solarRegen = clamp(2 + Math.pow(this.star.luminosity, 0.25) * 4, 2, 13);
+    this.hazards = planetHazards(this.planet);
+    this.coldProtection = coldProtectionFor();
+    this.airProtection = airProtectionFor();
     const pal = biomePalette(this.planet, this.star);
     this.sampler = makeTerrain(this.planet, this.planet.seed, pal);
     this.groundColor = new THREE.Color(rgbToHex(pal.terrainLow));
@@ -177,7 +205,8 @@ export class SurfaceScene implements AppScene {
 
     // Sky / fog / background.
     this.scene.background = new THREE.Color(rgbToHex(pal.skyHorizon));
-    this.scene.fog = new THREE.FogExp2(rgbToHex(pal.fog), lerp(0.0016, 0.006, this.planet.atmosphere));
+    this.fogBase = lerp(0.0016, 0.006, this.planet.atmosphere);
+    this.scene.fog = new THREE.FogExp2(rgbToHex(pal.fog), this.fogBase);
 
     // Sun (seeded direction) + ambient.
     const rng = makeRNG(deriveSeed(this.planet.seed, 0x5a));
@@ -215,6 +244,19 @@ export class SurfaceScene implements AppScene {
 
     this.sky = new SkyDome(pal.skyHorizon, pal.skyZenith, pal.sun, sunDir);
     this.scene.add(this.sky.mesh);
+
+    // Night sky (real galaxy starfield from this planet), derived moons + soft
+    // moonlight, and light weather (rain/snow) that shifts fog + sun.
+    this.nightSky = new NightSky(universeSeed, cell, starIndex, this.planet.axialTilt);
+    this.scene.add(this.nightSky.group);
+    this.moons = new Moons(this.planet.seed);
+    this.scene.add(this.moons.group);
+    this.moonLight = new THREE.DirectionalLight(0x9fb4e8, 0);
+    this.moonLight.castShadow = false;
+    this.scene.add(this.moonLight);
+    this.scene.add(this.moonLight.target);
+    this.weather = new Weather(this.planet);
+    this.scene.add(this.weather.group);
 
     // Flashlight / headlamp (toggle with F) — for night and dark worlds.
     this.flashlight = new THREE.SpotLight(0xfff2d6, 0, 90, 0.55, 0.45, 1.0);
@@ -289,6 +331,8 @@ export class SurfaceScene implements AppScene {
       if ((o as THREE.Mesh).isMesh) o.castShadow = true;
     });
     this.terminal = new ShipTerminal(hudRoot);
+    this.bench = new CraftBench(hudRoot);
+    this.bench.onCraft = (id) => this.craftItem(id);
     this.reticle = new Reticle(hudRoot);
     this.markers = new Markers(hudRoot);
     this.shud = new SurfaceHud(hudRoot);
@@ -578,6 +622,10 @@ export class SurfaceScene implements AppScene {
       this.toggleShipTerminal();
     } else if (e.key === 'c' || e.key === 'C') {
       this.codex.toggle();
+    } else if (e.key === 'v' || e.key === 'V') {
+      this.toggleBench();
+    } else if (e.key === 'q' || e.key === 'Q') {
+      this.useEnergyCell();
     }
   };
 
@@ -593,6 +641,58 @@ export class SurfaceScene implements AppScene {
       this.terminal.toggle();
     } else {
       this.lastMsg = 'return to your ship to trade & upgrade';
+    }
+  }
+
+  private toggleBench(): void {
+    if (this.bench.isOpen || this.nearShip) {
+      if (this.terminal.visible) this.terminal.toggle();
+      this.bench.toggle(this.inventory);
+    } else {
+      this.lastMsg = 'return to your ship to craft gear';
+    }
+  }
+
+  /** Craft a recipe from current cargo (meaningful at the ship). */
+  private craftItem(id: string): void {
+    const r = RECIPES.find((x) => x.id === id);
+    if (!r) return;
+    if (!canCraft(r, this.inventory)) {
+      this.lastMsg = `can't craft ${r.name} — missing materials`;
+      return;
+    }
+    const consumed = doCraft(r, this.inventory);
+    this.cargoUsed = Math.max(0, this.cargoUsed - consumed);
+    this.applyProgression();
+    this.bench.refresh(this.inventory);
+    this.markers.showBanner(`CRAFTED  ·  ${r.name}`);
+    this.lastMsg = `crafted ${r.name}`;
+    audio.play('equip', 0.8);
+  }
+
+  /** Spend a held energy cell to restore energy in the field. */
+  private useEnergyCell(): void {
+    if (progression.cells <= 0) {
+      this.lastMsg = 'no energy cells — craft some at the ship';
+      return;
+    }
+    progression.cells -= 1;
+    this.energy = Math.min(this.energyMax, this.energy + 60);
+    this.regenDelay = 0;
+    saveProgression();
+    this.markers.showBanner('ENERGY CELL  ·  +60 energy');
+    audio.play('pickup', 0.7);
+  }
+
+  /** Hazard tick damage: straight to health (suits, not shields, stop this),
+   *  and can trigger the downed/recover loop. */
+  private hazardDamage(amount: number): void {
+    if (this.invuln > 0 || this.downed > 0) return;
+    this.health -= amount;
+    this.hitFlash = Math.max(this.hitFlash, 0.3);
+    if (this.health <= 0) {
+      this.health = 0;
+      this.beginDowned();
     }
   }
 
@@ -617,6 +717,8 @@ export class SurfaceScene implements AppScene {
       { id: 'fly', label: 'FLY', onDown: () => this.controller.toggleMode() },
       { id: 'ship', label: 'SHIP', onDown: () => this.toggleShipTerminal() },
       { id: 'codex', label: 'CODEX', onDown: () => this.codex.toggle() },
+      { id: 'craft', label: 'CRAFT', onDown: () => this.toggleBench() },
+      { id: 'cell', label: 'CELL', onDown: () => this.useEnergyCell() },
       { id: 'lift', label: 'LIFT', onDown: () => this.onTakeOff?.() },
     ];
   }
@@ -693,6 +795,8 @@ export class SurfaceScene implements AppScene {
     this.cargoCap = cargoCapFor();
     this.scanRange = scanRangeFor();
     this.drillTier = drillTierFor();
+    this.coldProtection = coldProtectionFor();
+    this.airProtection = airProtectionFor();
     const hm = healthMaxFor();
     if (hm > this.healthMax) this.health += hm - this.healthMax; // upgrade tops up
     this.healthMax = hm;
@@ -779,6 +883,9 @@ export class SurfaceScene implements AppScene {
     // Sky + fog + background.
     this.cTmpA.copy(this.nightHorizon).lerp(this.dayHorizon, daylight);
     this.cTmpB.copy(this.nightZenith).lerp(this.dayZenith, daylight);
+    // Dawn/dusk: warm the horizon band while the sun rides low.
+    const twilight = clamp(1 - Math.abs(height) * 3.0, 0, 1);
+    this.cTmpA.lerp(this.duskColor, twilight * 0.5);
     this.sky.setColors(this.cTmpA, this.cTmpB, this.cTmpC);
     this.sky.setSunDir(this.sunDir);
     (this.scene.fog as THREE.FogExp2).color.copy(this.cTmpA);
@@ -821,6 +928,22 @@ export class SurfaceScene implements AppScene {
     this.herds.update(sdt, this.camera.position);
     this.sky.follow(this.camera.position);
     this.updateDayNight(dt);
+
+    // Celestial + weather: wheel/fade the real starfield, orbit + light the
+    // moons, roll precipitation in/out (which thickens fog + dims the sun).
+    this.weather.update(dt, this.camera.position);
+    const wI = this.weather.intensity;
+    this.nightSky.follow(this.camera.position);
+    this.nightSky.setTime(this.timeOfDay, clamp(1 - this.dayNightDaylight * 1.5, 0, 1) * (1 - 0.7 * wI));
+    this.moons.update(dt, this.sunDir, this.dayNightDaylight, this.camera.position);
+    this.moonLight.intensity = this.moons.lightIntensity;
+    this.moonLight.target.position.copy(this.camera.position);
+    this.moonLight.position.copy(this.camera.position).addScaledVector(this.moons.lightDir, -200);
+    this.ambient.intensity += this.moons.ambientBump;
+    if (this.weather.kind !== 'none') {
+      (this.scene.fog as THREE.FogExp2).density = this.fogBase * (1 + 1.6 * wI);
+      this.sun.intensity *= 1 - 0.45 * wI;
+    }
     // Flashlight tracks the camera, aimed forward.
     if (this.flashOn) {
       this.camera.getWorldDirection(this.aimDir);
@@ -877,6 +1000,33 @@ export class SurfaceScene implements AppScene {
       this.shield = Math.min(this.shieldMax, this.shield + 45 * dt);
       this.regenDelay = 0;
     }
+
+    // Environmental hazards: cold drains Warmth, toxic drains Air. Off-hazard or
+    // near the ship they recover. A bottomed-out meter bites health directly
+    // (bypassing shields — suits, not armor, stop this) and can down you, feeding
+    // the existing recover-at-ship loop. Crafted gear negates the drain.
+    const coldDrain = this.hazards.cold * (1 - this.coldProtection) * 5.0;
+    const toxDrain = this.hazards.toxic * (1 - this.airProtection) * 4.2;
+    if (this.nearShip) {
+      this.warmth = Math.min(this.warmthMax, this.warmth + 60 * dt);
+      this.air = Math.min(this.airMax, this.air + 60 * dt);
+    } else {
+      this.warmth = clamp(this.warmth + (coldDrain > 0 ? -coldDrain : 18) * dt, 0, this.warmthMax);
+      this.air = clamp(this.air + (toxDrain > 0 ? -toxDrain : 18) * dt, 0, this.airMax);
+    }
+    let hazPenalty = 0;
+    if (coldDrain > 0 && this.warmth <= 0) hazPenalty += 7;
+    if (toxDrain > 0 && this.air <= 0) hazPenalty += 8;
+    this.hazardDmgT -= dt;
+    if (hazPenalty > 0 && this.hazardDmgT <= 0) {
+      this.hazardDmgT = 0.5;
+      this.hazardDamage(hazPenalty * 0.5);
+      this.lastMsg =
+        this.warmth <= 0 && this.air <= 0 ? '⚠ freezing & suffocating — retreat to the ship!'
+          : this.warmth <= 0 ? '⚠ freezing — get to the ship!'
+            : '⚠ no breathable air — retreat!';
+    }
+
     if (this.terminal.visible) this.terminal.setSellValue(this.cargoValue());
 
     // --- Movement feel ---
@@ -938,7 +1088,7 @@ export class SurfaceScene implements AppScene {
     this.objectives.update(dt);
 
     // Styled HUD.
-    const menuOpen = this.terminal.visible || this.codex.visible;
+    const menuOpen = this.terminal.visible || this.codex.visible || this.bench.isOpen;
     const hint = this.downed > 0
       ? 'downed — recovering at your ship…'
       : !this.controller.isLocked && !touch.enabled
@@ -963,6 +1113,13 @@ export class SurfaceScene implements AppScene {
       scanRange: this.scanRange,
       nearShip: this.nearShip,
       hint,
+      warmth: this.warmth,
+      warmthMax: this.warmthMax,
+      air: this.air,
+      airMax: this.airMax,
+      showWarmth: this.hazards.cold > 0.04,
+      showAir: this.hazards.toxic > 0.04,
+      cells: progression.cells,
     });
     this.shud.setVisible(!menuOpen);
     // Objective tracker: accepted missions with live progress.
@@ -971,6 +1128,7 @@ export class SurfaceScene implements AppScene {
     this.notify.update(dt);
     touchUI.current?.block('terminal', this.terminal.visible);
     touchUI.current?.block('codex', this.codex.visible);
+    touchUI.current?.block('bench', this.bench.isOpen);
     // Keep movement frozen while a menu is open or while downed (covers closing
     // via the in-menu button, which bypasses the key handler).
     this.controller.enabled = !menuOpen && this.downed <= 0;
@@ -1045,6 +1203,7 @@ export class SurfaceScene implements AppScene {
     this.compass.dispose();
     this.ship.dispose();
     this.terminal.dispose();
+    this.bench.dispose();
     this.reticle.dispose();
     this.markers.dispose();
     this.shud.dispose();
@@ -1058,6 +1217,9 @@ export class SurfaceScene implements AppScene {
     this.fish?.dispose();
     this.herds.dispose();
     this.sky.dispose();
+    this.nightSky.dispose();
+    this.moons.dispose();
+    this.weather.dispose();
     this.water?.dispose();
     this.viewmodel.dispose();
   }

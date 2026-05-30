@@ -41,6 +41,10 @@ export interface Progression {
   xp: number;
   missions: Mission[];
   codex: Codex;
+  /** Crafted hazard-protection tiers (0 = none). Persists cross-planet. */
+  craft: { coldSuit: number; airFilter: number };
+  /** Energy cells held (field consumable). */
+  cells: number;
 }
 
 function freshCodex(): Codex {
@@ -60,6 +64,8 @@ export const progression: Progression = {
   xp: 0,
   missions: [],
   codex: freshCodex(),
+  craft: { coldSuit: 0, airFilter: 0 },
+  cells: 0,
 };
 
 // ---- XP & level ------------------------------------------------------------
@@ -182,6 +188,10 @@ export async function loadProgression(): Promise<void> {
   const c = freshCodex();
   progression.codex = { ...c, ...progression.codex };
   if (!Array.isArray(progression.missions)) progression.missions = [];
+  // Backfill crafting fields for saves from before the crafting pass.
+  const savedCraft = progression.craft;
+  progression.craft = { coldSuit: savedCraft?.coldSuit ?? 0, airFilter: savedCraft?.airFilter ?? 0 };
+  if (typeof progression.cells !== 'number') progression.cells = 0;
   ensureMissions();
 }
 

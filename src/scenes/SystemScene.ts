@@ -6,6 +6,7 @@ import { Spaceship } from '../render/spaceship.ts';
 import { Missiles } from '../render/missiles.ts';
 import { deriveStarAt, deriveSystem } from '../universe/index.ts';
 import { planetResources, planetDanger } from '../universe/resources.ts';
+import { planetHazards } from '../sim/hazards.ts';
 import { audio } from '../audio/audio.ts';
 import { biomePalette } from '../palette/index.ts';
 import { rgbToHex, scaleRGB } from '../core/color.ts';
@@ -263,10 +264,12 @@ export class SystemScene implements AppScene {
         const danger = planetDanger(p);
         const stars = '★'.repeat(1 + Math.round(danger * 4));
         const res = planetResources(p, this.star).sort((a, c) => c.weight - a.weight).slice(0, 4).map((r) => r.type.name).join(', ');
+        const h = planetHazards(p);
+        const haz = [h.cold > 0.04 ? '❄ cold' : '', h.toxic > 0.04 ? '☣ toxic' : ''].filter(Boolean).join(' ');
         return `<div style="display:flex;justify-content:space-between;gap:12px;margin:6px 0;padding-bottom:6px;border-bottom:1px solid rgba(120,160,220,0.12)">
           <div><b>#${p.index} ${p.biome}</b>${p.inHabitableZone ? ' <span style="color:#9affd0">HZ</span>' : ''}<br>
           <span style="opacity:0.7">${p.orbitalRadius.toFixed(2)} AU · ${p.surfaceTemp.toFixed(0)}K · ${p.gravity.toFixed(2)}g</span></div>
-          <div style="text-align:right"><span style="color:#ff8a5a">${stars}</span><br><span style="opacity:0.8">${res || 'barren'}</span></div>
+          <div style="text-align:right"><span style="color:#ff8a5a">${stars}</span><br><span style="opacity:0.8">${res || 'barren'}</span>${haz ? `<br><span style="opacity:0.85;color:#ffb38a">${haz}</span>` : ''}</div>
         </div>`;
       })
       .join('');
@@ -376,6 +379,8 @@ export class SystemScene implements AppScene {
       .slice(0, 3)
       .map((r) => r.type.name)
       .join(', ');
-    return `danger ${stars} · ${res || 'barren'}`;
+    const h = planetHazards(p);
+    const haz = [h.cold > 0.04 ? '❄ cold' : '', h.toxic > 0.04 ? '☣ toxic' : ''].filter(Boolean).join(' ');
+    return `danger ${stars} · ${res || 'barren'}${haz ? ` · ${haz}` : ''}`;
   }
 }

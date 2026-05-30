@@ -1,5 +1,6 @@
 // Styled first-person HUD for the surface: health + shield + energy + cargo bars
-// (bottom-left), currency/level/weapon/scanner (bottom-right), and a context
+// (bottom-left), plus hazard meters (warmth / air) shown only on worlds that
+// have that hazard; currency/level/weapon/scanner (bottom-right), and a context
 // hint. Clean panels rather than monospace stat dumps.
 
 export interface SurfaceHudData {
@@ -19,6 +20,13 @@ export interface SurfaceHudData {
   scanRange: number;
   nearShip: boolean;
   hint: string;
+  warmth: number;
+  warmthMax: number;
+  air: number;
+  airMax: number;
+  showWarmth: boolean;
+  showAir: boolean;
+  cells: number;
 }
 
 export class SurfaceHud {
@@ -33,6 +41,12 @@ export class SurfaceHud {
   private readonly energyLabel: HTMLDivElement;
   private readonly cargoFill: HTMLDivElement;
   private readonly cargoLabel: HTMLDivElement;
+  private readonly warmthFill: HTMLDivElement;
+  private readonly warmthLabel: HTMLDivElement;
+  private readonly warmthTrack: HTMLDivElement;
+  private readonly airFill: HTMLDivElement;
+  private readonly airLabel: HTMLDivElement;
+  private readonly airTrack: HTMLDivElement;
 
   constructor(root: HTMLElement) {
     const panel = (corner: 'left' | 'right'): HTMLDivElement => {
@@ -56,7 +70,17 @@ export class SurfaceHud {
     this.cargoLabel = this.mkLabel();
     const cTrack = this.bar();
     this.cargoFill = cTrack.firstChild as HTMLDivElement;
-    this.left.append(this.healthLabel, hTrack, this.shieldLabel, sTrack, this.energyLabel, eTrack, this.cargoLabel, cTrack);
+    // Hazard meters — appended last, toggled per-world in set().
+    this.warmthLabel = this.mkLabel();
+    this.warmthTrack = this.bar();
+    this.warmthFill = this.warmthTrack.firstChild as HTMLDivElement;
+    this.airLabel = this.mkLabel();
+    this.airTrack = this.bar();
+    this.airFill = this.airTrack.firstChild as HTMLDivElement;
+    this.left.append(
+      this.healthLabel, hTrack, this.shieldLabel, sTrack, this.energyLabel, eTrack,
+      this.cargoLabel, cTrack, this.warmthLabel, this.warmthTrack, this.airLabel, this.airTrack,
+    );
 
     this.hint = document.createElement('div');
     this.hint.style.cssText = 'position:absolute;bottom:64px;left:50%;transform:translateX(-50%);pointer-events:none;font:12px ui-monospace,monospace;color:#bfe0ff;text-shadow:0 1px 3px #000;opacity:0.9;text-align:center';
@@ -99,12 +123,32 @@ export class SurfaceHud {
     this.cargoFill.style.background = c > 0.95 ? '#ff5a4a' : '#d0a24a';
     this.cargoLabel.textContent = `CARGO ${Math.round(d.cargo)}/${d.cargoCap}`;
 
+    const wShow = d.showWarmth ? 'block' : 'none';
+    this.warmthLabel.style.display = wShow;
+    this.warmthTrack.style.display = wShow;
+    if (d.showWarmth) {
+      const w = Math.max(0, Math.min(1, d.warmth / d.warmthMax));
+      this.warmthFill.style.width = `${w * 100}%`;
+      this.warmthFill.style.background = w < 0.25 ? '#ff5a4a' : w < 0.5 ? '#ffc24a' : '#7ad0ff';
+      this.warmthLabel.textContent = `❄ WARMTH ${Math.round(d.warmth)}/${d.warmthMax}${d.warmth <= 0 ? '  ⚠ FREEZING' : ''}`;
+    }
+    const aShow = d.showAir ? 'block' : 'none';
+    this.airLabel.style.display = aShow;
+    this.airTrack.style.display = aShow;
+    if (d.showAir) {
+      const a = Math.max(0, Math.min(1, d.air / d.airMax));
+      this.airFill.style.width = `${a * 100}%`;
+      this.airFill.style.background = a < 0.25 ? '#ff5a4a' : a < 0.5 ? '#ffc24a' : '#8fe0a0';
+      this.airLabel.textContent = `☣ AIR ${Math.round(d.air)}/${d.airMax}${d.air <= 0 ? '  ⚠ SUFFOCATING' : ''}`;
+    }
+
     this.right.innerHTML =
       `<div style="font-size:15px;color:#ffd27a;font-weight:700">${d.currency}¢</div>` +
       `<div style="opacity:0.85;margin-top:2px">Lv ${d.level} · rep ${d.reputation}</div>` +
       `<div style="margin-top:6px">${d.weapon}</div>` +
       `<div style="opacity:0.7;margin-top:2px">drill T${d.drillTier} · scan ${d.scanRange}m</div>` +
-      `<div style="opacity:0.55;margin-top:6px">[1]gun [2]bomb [3]drill · [R]scan · [B]ship · [C]codex</div>`;
+      (d.cells > 0 ? `<div style="margin-top:2px;color:#9affd0">⚡ energy cells ×${d.cells} · [Q]</div>` : '') +
+      `<div style="opacity:0.55;margin-top:6px">[1]gun [2]bomb [3]drill · [R]scan · [B]ship · [V]craft · [C]codex</div>`;
 
     this.hint.textContent = d.hint;
     this.hint.style.color = d.nearShip ? '#9affd0' : '#bfe0ff';
