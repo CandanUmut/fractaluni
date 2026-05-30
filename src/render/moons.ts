@@ -61,7 +61,11 @@ export class Moons {
       const color = new THREE.Color().setHSL(hue, sat, lightness);
 
       const mat = new THREE.ShaderMaterial({
-        depthWrite: false, // sits beyond everything; never occludes terrain
+        // Opaque + writes depth so the (depth-write-off) sky dome behind it fails
+        // the depth test and doesn't paint over the moon. Terrain is nearer and
+        // still occludes it correctly.
+        depthWrite: true,
+        depthTest: true,
         uniforms: {
           uSunDir: { value: new THREE.Vector3(0, 1, 0) },
           uColor: { value: color },
@@ -91,7 +95,6 @@ export class Moons {
       const geo = new THREE.IcosahedronGeometry(worldR, 4);
       const mesh = new THREE.Mesh(geo, mat);
       mesh.frustumCulled = false;
-      mesh.renderOrder = -1; // draw before opaque scene content
       this.group.add(mesh);
 
       // Orbit plane: tilt a base XZ circle by a seeded inclination so moons rise

@@ -159,7 +159,9 @@ export class SystemScene implements AppScene {
 
   private fireMissiles(): void {
     if (!this.missiles.ready) return;
-    this.ship.group.getWorldDirection(this.fwd);
+    // Fire along the nose (local -Z), matching muzzleWorld. (getWorldDirection
+    // returns the +Z matrix column — the tail — so missiles flew backward.)
+    this.fwd.set(0, 0, -1).applyQuaternion(this.ship.group.quaternion);
     for (const side of [-1, 1]) {
       this.ship.muzzleWorld(side, this.muzzle);
       this.missiles.fire(this.muzzle, this.fwd, this.missileSpeed);
